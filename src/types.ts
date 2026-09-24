@@ -10,28 +10,41 @@ export interface ForecastArea {
 export interface WeatherData {
   area: string;
   forecast: string;
-  forecastPeriod: string; // e.g. "5.00 pm to 7.00 pm"
-  validPeriod: {
+  forecastPeriod: string | {
     start: string;
     end: string;
     text: string;
   };
+  validPeriod?: {
+    start: string;
+    end: string;
+    text: string;
+  };
+  lastUpdated?: string;
   updateTime: string; // ISO string or timestamp from API
 }
 
 export interface WeatherApiResponse {
+  success?: boolean;
   status: 'ok' | 'error';
   area: string;
   forecast: string;
-  forecastPeriod: string;
+  forecastPeriod: string | {
+    start: string;
+    end: string;
+    text: string;
+  };
   validPeriod: {
     start: string;
     end: string;
     text: string;
   };
+  lastUpdated?: string;
   updateTime: string;
   areas: ForecastArea[];
   message?: string;
+  error?: string;
+  upstreamStatus?: number;
 }
 
 export interface AgentAction {

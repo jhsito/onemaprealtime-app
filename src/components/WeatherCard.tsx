@@ -58,6 +58,12 @@ export const WeatherCard: React.FC<WeatherCardProps> = ({
 }) => {
   const isDay = theme === 'day';
 
+  const periodText =
+    typeof weather?.forecastPeriod === 'string'
+      ? weather.forecastPeriod
+      : weather?.forecastPeriod?.text || weather?.validPeriod?.text || 'Next 2 Hours';
+  const lastUpdatedTime = weather?.lastUpdated || weather?.updateTime || '';
+
   return (
     <div
       className={`rounded-2xl p-6 shadow-xl border transition-all duration-200 ${
@@ -197,7 +203,7 @@ export const WeatherCard: React.FC<WeatherCardProps> = ({
                   Forecast Period
                 </div>
                 <div className={`text-sm font-bold ${isDay ? 'text-slate-900' : 'text-slate-100'}`}>
-                  {weather.forecastPeriod || weather.validPeriod?.text || 'Next 2 Hours'}
+                  {periodText}
                 </div>
               </div>
             </div>
@@ -215,7 +221,7 @@ export const WeatherCard: React.FC<WeatherCardProps> = ({
                   Last Updated
                 </div>
                 <div className={`text-sm font-bold ${isDay ? 'text-slate-900' : 'text-slate-100'}`}>
-                  {formatUpdatedTime(weather.updateTime)}
+                  {formatUpdatedTime(lastUpdatedTime)}
                 </div>
               </div>
             </div>

@@ -45,6 +45,12 @@ export default function App() {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Ref to track current selected area for background refresh
+  const selectedAreaRef = React.useRef(selectedArea);
+  useEffect(() => {
+    selectedAreaRef.current = selectedArea;
+  }, [selectedArea]);
+
   // Health Modal State
   const [isHealthModalOpen, setIsHealthModalOpen] = useState(false);
 
@@ -62,41 +68,61 @@ export default function App() {
   const [activeAgentStep, setActiveAgentStep] = useState<string | null>(null);
 
   // Fetch 2-Hour Weather from /api/weather
-  const fetchWeather = async (areaName?: string) => {
-    setIsLoading(true);
+  const fetchWeather = async (areaName?: string, isBackground = false) => {
+    if (!isBackground) {
+      setIsLoading(true);
+    }
     setError(null);
     try {
-      const url = areaName ? `/api/weather?area=${encodeURIComponent(areaName)}` : '/api/weather';
+      const targetArea = areaName || selectedAreaRef.current || 'Bedok';
+      const url = targetArea ? `/api/weather?area=${encodeURIComponent(targetArea)}` : '/api/weather';
       const res = await fetch(url);
       if (!res.ok) {
         throw new Error('Live 2-hour weather information is temporarily unavailable.');
       }
       const data = await res.json();
-      if (data.status === 'ok') {
+      if (data.success || data.status === 'ok') {
         if (data.areas && Array.isArray(data.areas)) {
           setAvailableAreas(data.areas);
         }
-        setSelectedArea(data.area);
+
+        // If the previously selected area is still present in returned areas, keep it; else update to returned area
+        const resolvedArea = data.area || targetArea;
+        setSelectedArea(resolvedArea);
+
+        const periodVal = data.forecastPeriod || data.validPeriod?.text || 'Next 2 Hours';
+        const updateVal = data.lastUpdated || data.updateTime || new Date().toISOString();
+
         setCurrentWeather({
-          area: data.area,
+          area: resolvedArea,
           forecast: data.forecast,
-          forecastPeriod: data.forecastPeriod || data.validPeriod?.text || 'Next 2 Hours',
+          forecastPeriod: periodVal,
           validPeriod: data.validPeriod,
-          updateTime: data.updateTime,
+          lastUpdated: updateVal,
+          updateTime: updateVal,
         });
       } else {
         setError(data.message || 'Live 2-hour weather information is temporarily unavailable.');
       }
-    } catch (err: any) {
+    } catch {
       setError('Live 2-hour weather information is temporarily unavailable.');
     } finally {
-      setIsLoading(false);
+      if (!isBackground) {
+        setIsLoading(false);
+      }
     }
   };
 
-  // Initial fetch on mount
+  // Initial fetch on mount & 5-minute periodic refresh
   useEffect(() => {
     fetchWeather('Bedok');
+
+    // 5-minute periodic refresh interval (preserves user's selected area)
+    const intervalId = setInterval(() => {
+      fetchWeather(selectedAreaRef.current, true);
+    }, 5 * 60 * 1000);
+
+    return () => clearInterval(intervalId);
   }, []);
 
   // Handle area selection from search or quick picks
