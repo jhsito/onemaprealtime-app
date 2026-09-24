@@ -1,4 +1,5 @@
 export type TravelMode = 'walk' | 'drive' | 'cycle' | 'pt';
+export type ThemeMode = 'day' | 'night';
 
 export interface LocationItem {
   name: string;

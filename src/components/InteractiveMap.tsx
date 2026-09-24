@@ -1,10 +1,11 @@
 import React, { useEffect, useRef } from 'react';
 import L from 'leaflet';
-import { LocationItem, RouteData, WeatherData } from '../types.ts';
+import { LocationItem, RouteData, WeatherData, ThemeMode } from '../types.ts';
 
 interface InteractiveMapProps {
   center: [number, number];
   zoom: number;
+  theme?: ThemeMode;
   selectedLocation: LocationItem | null;
   startLocation: LocationItem | null;
   destination: LocationItem | null;
@@ -45,6 +46,7 @@ function createPinIcon(color: string, label: string = '', iconType: 'pin' | 'sta
 export const InteractiveMap: React.FC<InteractiveMapProps> = ({
   center,
   zoom,
+  theme = 'night',
   selectedLocation,
   startLocation,
   destination,
@@ -88,22 +90,31 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
     // Add zoom control at bottom right
     L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-    // Primary: OneMap default raster tiles
-    const oneMapLayer = L.tileLayer('https://www.onemap.gov.sg/maps/tiles/Default/{z}/{x}/{y}.png', {
+    // Initial tile layer based on current theme
+    const tileUrl =
+      theme === 'day'
+        ? 'https://www.onemap.gov.sg/maps/tiles/Default/{z}/{x}/{y}.png'
+        : 'https://www.onemap.gov.sg/maps/tiles/Night/{z}/{x}/{y}.png';
+
+    const oneMapLayer = L.tileLayer(tileUrl, {
       attribution:
         '&copy; <a href="https://www.onemap.gov.sg" target="_blank" rel="noopener">OneMap</a> | &copy; SLA',
       maxZoom: 19,
     });
 
-    // Fallback: OpenStreetMap standard tiles in case OneMap tiles error
+    // Fallback if OneMap tiles encounter issue
     oneMapLayer.on('tileerror', () => {
       if (tileLayerRef.current === oneMapLayer) {
         map.removeLayer(oneMapLayer);
-        const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        const fallbackUrl =
+          theme === 'day'
+            ? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+            : 'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png';
+        const fallback = L.tileLayer(fallbackUrl, {
           attribution: '&copy; OpenStreetMap contributors',
           maxZoom: 19,
         }).addTo(map);
-        tileLayerRef.current = osm;
+        tileLayerRef.current = fallback;
       }
     });
 
@@ -127,6 +138,46 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
       mapInstanceRef.current = null;
     };
   }, []);
+
+  // Update Tile Layer when theme changes (Day <-> Night)
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    if (tileLayerRef.current) {
+      map.removeLayer(tileLayerRef.current);
+      tileLayerRef.current = null;
+    }
+
+    const tileUrl =
+      theme === 'day'
+        ? 'https://www.onemap.gov.sg/maps/tiles/Default/{z}/{x}/{y}.png'
+        : 'https://www.onemap.gov.sg/maps/tiles/Night/{z}/{x}/{y}.png';
+
+    const newLayer = L.tileLayer(tileUrl, {
+      attribution:
+        '&copy; <a href="https://www.onemap.gov.sg" target="_blank" rel="noopener">OneMap</a> | &copy; SLA',
+      maxZoom: 19,
+    });
+
+    newLayer.on('tileerror', () => {
+      if (tileLayerRef.current === newLayer) {
+        map.removeLayer(newLayer);
+        const fallbackUrl =
+          theme === 'day'
+            ? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+            : 'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png';
+        const fallback = L.tileLayer(fallbackUrl, {
+          attribution: '&copy; OpenStreetMap contributors',
+          maxZoom: 19,
+        }).addTo(map);
+        tileLayerRef.current = fallback;
+      }
+    });
+
+    newLayer.addTo(map);
+    tileLayerRef.current = newLayer;
+  }, [theme]);
 
   // Update map view center when prop changes (if not in a route)
   useEffect(() => {
@@ -152,7 +203,7 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
       const marker = L.marker([selectedLocation.lat, selectedLocation.lng], { icon }).addTo(map);
 
       const popupContent = document.createElement('div');
-      popupContent.className = 'p-1 text-slate-800 text-xs font-sans';
+      popupContent.className = `p-1 text-xs font-sans ${theme === 'day' ? 'text-slate-800' : 'text-slate-900'}`;
       popupContent.innerHTML = `
         <div class="font-bold text-sm text-slate-900 mb-1">${selectedLocation.name}</div>
         <div class="text-slate-600 text-xs mb-2">${selectedLocation.address || ''}</div>
@@ -176,7 +227,7 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
       marker.bindPopup(popupContent).openPopup();
       selectedMarkerRef.current = marker;
     }
-  }, [selectedLocation, onSetAsStart, onSetAsDestination]);
+  }, [selectedLocation, theme, onSetAsStart, onSetAsDestination]);
 
   // Update Start and Destination Markers
   useEffect(() => {
@@ -193,7 +244,7 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
       const marker = L.marker([startLocation.lat, startLocation.lng], { icon })
         .addTo(map)
         .bindPopup(
-          `<div class="text-xs p-1"><span class="font-bold text-emerald-700">Start (A):</span><br/>${startLocation.name}</div>`
+          `<div class="text-xs p-1 text-slate-900"><span class="font-bold text-emerald-700">Start (A):</span><br/>${startLocation.name}</div>`
         );
       startMarkerRef.current = marker;
     }
@@ -208,7 +259,7 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
       const marker = L.marker([destination.lat, destination.lng], { icon })
         .addTo(map)
         .bindPopup(
-          `<div class="text-xs p-1"><span class="font-bold text-rose-700">Destination (B):</span><br/>${destination.name}</div>`
+          `<div class="text-xs p-1 text-slate-900"><span class="font-bold text-rose-700">Destination (B):</span><br/>${destination.name}</div>`
         );
       destMarkerRef.current = marker;
     }
@@ -232,25 +283,26 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
       const latLngs = currentRoute.coordinates;
 
       // Color scheme according to travel mode
-      let strokeColor = '#3b82f6'; // default blue
+      let strokeColor = '#2563eb'; // default blue
       let dashArray = '';
       if (currentRoute.travel_mode === 'walk') {
-        strokeColor = '#10b981'; // emerald green
-        dashArray = '6, 8'; // dashed for walking
+        strokeColor = '#059669'; // emerald green
+        dashArray = '6, 8';
       } else if (currentRoute.travel_mode === 'cycle') {
-        strokeColor = '#f59e0b'; // amber orange
+        strokeColor = '#d97706'; // amber orange
         dashArray = '8, 6';
       } else if (currentRoute.travel_mode === 'drive') {
-        strokeColor = '#6366f1'; // indigo
+        strokeColor = '#4f46e5'; // indigo
       } else if (currentRoute.travel_mode === 'pt') {
-        strokeColor = '#ec4899'; // pink/magenta
+        strokeColor = '#db2777'; // magenta
       }
 
-      // Route outline for contrast
+      // Route outline for contrast (white outline in day mode, dark in night mode)
+      const outlineColor = theme === 'day' ? '#ffffff' : '#0f172a';
       const outline = L.polyline(latLngs, {
-        color: '#0f172a',
+        color: outlineColor,
         weight: 8,
-        opacity: 0.6,
+        opacity: theme === 'day' ? 0.9 : 0.6,
       }).addTo(map);
       routeOutlineRef.current = outline;
 
@@ -267,38 +319,92 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
       const bounds = L.latLngBounds(latLngs);
       map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 });
     }
-  }, [currentRoute]);
+  }, [currentRoute, theme]);
+
+  const isDay = theme === 'day';
 
   return (
     <div className="relative w-full h-full">
-      <div ref={mapContainerRef} className="w-full h-full z-0 bg-slate-800" />
+      <div
+        ref={mapContainerRef}
+        className={`w-full h-full z-0 transition-colors duration-300 ${
+          isDay ? 'bg-slate-200' : 'bg-slate-900'
+        }`}
+      />
 
       {/* Map Overlay Badge: Active OneMap Mode */}
       <div className="absolute top-4 left-4 z-10 pointer-events-none flex flex-col gap-1.5">
-        <div className="bg-slate-900/90 backdrop-blur border border-slate-700/80 px-3 py-1.5 rounded-lg shadow-lg flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-          <span className="text-xs font-semibold tracking-wide text-slate-200">OneMap SG Live Map</span>
+        <div
+          className={`backdrop-blur px-3 py-1.5 rounded-lg shadow-lg flex items-center gap-2 border transition-colors ${
+            isDay
+              ? 'bg-white/95 border-slate-300 text-slate-800'
+              : 'bg-slate-900/90 border-slate-700/80 text-slate-200'
+          }`}
+        >
+          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+          <span className="text-xs font-semibold tracking-wide">
+            OneMap SG {isDay ? 'Day Map' : 'Night Map'}
+          </span>
         </div>
         {currentRoute && (
-          <div className="bg-indigo-950/90 backdrop-blur border border-indigo-700/60 px-2.5 py-1 rounded-md text-[11px] text-indigo-200 shadow">
-            Route mode: <span className="font-semibold uppercase tracking-wider text-white">{currentRoute.travel_mode}</span>
+          <div
+            className={`backdrop-blur px-2.5 py-1 rounded-md text-[11px] shadow border transition-colors ${
+              isDay
+                ? 'bg-blue-50/95 border-blue-200 text-blue-800'
+                : 'bg-indigo-950/90 border-indigo-700/60 text-indigo-200'
+            }`}
+          >
+            Route mode:{' '}
+            <span
+              className={`font-semibold uppercase tracking-wider ${
+                isDay ? 'text-blue-900' : 'text-white'
+              }`}
+            >
+              {currentRoute.travel_mode}
+            </span>
           </div>
         )}
       </div>
 
       {/* Floating Weather Indicator directly on Map */}
       {currentWeather && (
-        <div className="absolute top-4 right-4 z-10 pointer-events-auto bg-slate-900/90 backdrop-blur border border-slate-700/80 px-3 py-2 rounded-xl shadow-xl flex items-center gap-2.5 max-w-[260px]">
-          <div className="w-8 h-8 rounded-lg bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-sky-400 shrink-0 text-base">
+        <div
+          className={`absolute top-4 right-4 z-10 pointer-events-auto backdrop-blur px-3 py-2 rounded-xl shadow-xl flex items-center gap-2.5 max-w-[260px] border transition-colors ${
+            isDay
+              ? 'bg-white/95 border-slate-200 text-slate-800'
+              : 'bg-slate-900/90 border-slate-700/80 text-slate-100'
+          }`}
+        >
+          <div
+            className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 text-base border ${
+              isDay
+                ? 'bg-sky-50 border-sky-200 text-sky-600'
+                : 'bg-sky-500/10 border-sky-500/30 text-sky-400'
+            }`}
+          >
             🌦️
           </div>
           <div className="min-w-0">
-            <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wider flex items-center gap-1">
+            <div
+              className={`text-[10px] font-medium uppercase tracking-wider flex items-center gap-1 ${
+                isDay ? 'text-slate-500' : 'text-slate-400'
+              }`}
+            >
               <span>SG 2-Hr Forecast</span>
-              <span className="text-sky-400 font-semibold">• {currentWeather.area}</span>
+              <span className={`font-semibold ${isDay ? 'text-sky-600' : 'text-sky-400'}`}>
+                • {currentWeather.area}
+              </span>
             </div>
-            <div className="text-xs font-bold text-slate-100 truncate">{currentWeather.forecast}</div>
-            <div className="text-[10px] text-slate-400">{currentWeather.forecastPeriod}</div>
+            <div
+              className={`text-xs font-bold truncate ${
+                isDay ? 'text-slate-900' : 'text-slate-100'
+              }`}
+            >
+              {currentWeather.forecast}
+            </div>
+            <div className={`text-[10px] ${isDay ? 'text-slate-500' : 'text-slate-400'}`}>
+              {currentWeather.forecastPeriod}
+            </div>
           </div>
         </div>
       )}

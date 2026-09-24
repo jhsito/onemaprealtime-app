@@ -14,10 +14,11 @@ import {
   RouteData,
   WeatherData,
   TravelMode,
+  ThemeMode,
   ChatMessage,
   AppState,
 } from './types.ts';
-import { Map, Navigation2 } from 'lucide-react';
+import { Navigation2, Sun, Moon } from 'lucide-react';
 
 const INITIAL_RAFFLES_PLACE: LocationItem = {
   name: 'Raffles Place',
@@ -28,6 +29,27 @@ const INITIAL_RAFFLES_PLACE: LocationItem = {
 };
 
 export default function App() {
+  // Day / Night Theme State
+  const [theme, setTheme] = useState<ThemeMode>(() => {
+    try {
+      const saved = localStorage.getItem('sg_nav_theme');
+      return saved === 'day' || saved === 'night' ? saved : 'night';
+    } catch {
+      return 'night';
+    }
+  });
+
+  const isDay = theme === 'day';
+
+  const toggleTheme = (newTheme: ThemeMode) => {
+    setTheme(newTheme);
+    try {
+      localStorage.setItem('sg_nav_theme', newTheme);
+    } catch {
+      // Ignore storage errors
+    }
+  };
+
   // Core Application State
   const [mapCenter, setMapCenter] = useState<[number, number]>([1.284349, 103.851072]);
   const [zoom, setZoom] = useState<number>(14);
@@ -251,30 +273,90 @@ export default function App() {
   };
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-slate-950 text-slate-100 font-sans overflow-hidden">
+    <div
+      className={`flex flex-col h-screen w-screen font-sans overflow-hidden transition-colors duration-200 ${
+        isDay ? 'bg-slate-100 text-slate-900' : 'bg-slate-950 text-slate-100'
+      }`}
+    >
       {/* Top Header Bar */}
-      <header className="h-14 shrink-0 bg-slate-900/90 backdrop-blur border-b border-slate-800 px-4 flex items-center justify-between z-20">
+      <header
+        className={`h-14 shrink-0 backdrop-blur px-4 flex items-center justify-between z-20 border-b transition-colors duration-200 ${
+          isDay
+            ? 'bg-white/95 border-slate-200 text-slate-900 shadow-sm'
+            : 'bg-slate-900/90 border-slate-800 text-white'
+        }`}
+      >
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-md shadow-blue-500/20">
             <Navigation2 className="w-4 h-4" />
           </div>
           <div>
-            <h1 className="text-sm font-bold tracking-tight text-white flex items-center gap-2">
+            <h1 className="text-sm font-bold tracking-tight flex items-center gap-2">
               <span>Singapore Travel Assistant</span>
-              <span className="text-[10px] font-normal px-2 py-0.5 rounded-full bg-blue-950 text-blue-300 border border-blue-800/60 hidden sm:inline">
+              <span
+                className={`text-[10px] font-normal px-2 py-0.5 rounded-full border hidden sm:inline ${
+                  isDay
+                    ? 'bg-blue-50 text-blue-700 border-blue-200'
+                    : 'bg-blue-950 text-blue-300 border-blue-800/60'
+                }`}
+              >
                 OneMap + data.gov.sg
               </span>
             </h1>
-            <div className="text-[10px] text-slate-400 hidden sm:block">
+            <div
+              className={`text-[10px] hidden sm:block ${
+                isDay ? 'text-slate-500' : 'text-slate-400'
+              }`}
+            >
               Agentic navigation with live OneMap geocoding, routing & 2-hr nowcast
             </div>
           </div>
         </div>
 
-        {/* Header Right Status */}
-        <div className="flex items-center gap-2 text-xs">
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-800/80 border border-slate-700/60 text-slate-300">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+        {/* Header Right: Day/Night Mode Toggle & Status */}
+        <div className="flex items-center gap-3">
+          {/* Day / Night Mode Segmented Control */}
+          <div
+            className={`flex items-center p-0.5 rounded-xl border transition-colors ${
+              isDay ? 'bg-slate-200/80 border-slate-300' : 'bg-slate-800/80 border-slate-700/70'
+            }`}
+            role="group"
+            aria-label="Theme mode toggle"
+          >
+            <button
+              onClick={() => toggleTheme('day')}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
+                isDay
+                  ? 'bg-white text-blue-700 shadow-sm font-semibold'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="Switch to Day Mode"
+            >
+              <Sun className="w-3.5 h-3.5" />
+              <span className="text-[11px]">Day</span>
+            </button>
+            <button
+              onClick={() => toggleTheme('night')}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
+                !isDay
+                  ? 'bg-slate-700 text-blue-300 shadow-sm font-semibold'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+              title="Switch to Night Mode"
+            >
+              <Moon className="w-3.5 h-3.5" />
+              <span className="text-[11px]">Night</span>
+            </button>
+          </div>
+
+          <div
+            className={`hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs ${
+              isDay
+                ? 'bg-slate-50 border-slate-200 text-slate-700'
+                : 'bg-slate-800/80 border-slate-700/60 text-slate-300'
+            }`}
+          >
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
             <span className="text-[11px] font-medium">OneMap Connected</span>
           </div>
         </div>
@@ -289,14 +371,16 @@ export default function App() {
             <SearchHeader
               onSelectLocation={handleSelectLocation}
               selectedLocation={selectedLocation}
+              theme={theme}
             />
           </div>
 
-          {/* Leaflet Map with OneMap Tiles */}
+          {/* Leaflet Map with OneMap Tiles (Day / Night) */}
           <div className="flex-1 w-full h-full">
             <InteractiveMap
               center={mapCenter}
               zoom={zoom}
+              theme={theme}
               selectedLocation={selectedLocation}
               startLocation={startLocation}
               destination={destination}
@@ -310,12 +394,17 @@ export default function App() {
         </div>
 
         {/* Right Sidebar: Directions, Weather & AI Assistant */}
-        <div className="w-full lg:w-[460px] xl:w-[490px] h-[45%] lg:h-full border-t lg:border-t-0 lg:border-l border-slate-800 bg-slate-950 flex flex-col shrink-0 overflow-y-auto z-10">
+        <div
+          className={`w-full lg:w-[460px] xl:w-[490px] h-[45%] lg:h-full border-t lg:border-t-0 lg:border-l flex flex-col shrink-0 overflow-y-auto z-10 transition-colors duration-200 ${
+            isDay ? 'bg-slate-50/90 border-slate-200' : 'bg-slate-950 border-slate-800'
+          }`}
+        >
           <div className="p-4 space-y-4">
             {/* AI Assistant Section */}
             <AiAssistantPanel
               messages={messages}
               isLoading={isAiLoading}
+              theme={theme}
               onSendMessage={handleSendAiMessage}
               activeAgentStep={activeAgentStep}
             />
@@ -327,6 +416,7 @@ export default function App() {
               travelMode={travelMode}
               currentRoute={currentRoute}
               isLoading={isRoutingLoading}
+              theme={theme}
               onSetStart={setStartLocation}
               onSetDestination={setDestination}
               onSetTravelMode={(mode) => {
@@ -353,6 +443,7 @@ export default function App() {
             <WeatherCard
               weather={currentWeather}
               isLoading={isWeatherLoading}
+              theme={theme}
               onRefresh={() => {
                 if (selectedLocation) {
                   fetchWeatherForLocation(selectedLocation.lat, selectedLocation.lng, selectedLocation.name);
@@ -364,7 +455,11 @@ export default function App() {
             />
 
             {/* Footer Disclaimer */}
-            <footer className="text-[10px] text-slate-400 text-center py-2 border-t border-slate-900 leading-relaxed">
+            <footer
+              className={`text-[10px] text-center py-2 border-t leading-relaxed transition-colors ${
+                isDay ? 'border-slate-200 text-slate-400' : 'border-slate-900 text-slate-500'
+              }`}
+            >
               This is an SMU course project and is not affiliated with or endorsed by OneMap, SLA, data.gov.sg, or the Singapore Government.
             </footer>
           </div>
