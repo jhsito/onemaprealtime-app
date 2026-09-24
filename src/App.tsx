@@ -9,6 +9,7 @@ import { SearchHeader } from './components/SearchHeader.tsx';
 import { DirectionsPanel } from './components/DirectionsPanel.tsx';
 import { WeatherCard } from './components/WeatherCard.tsx';
 import { AiAssistantPanel } from './components/AiAssistantPanel.tsx';
+import { HealthModal } from './components/HealthModal.tsx';
 import {
   LocationItem,
   RouteData,
@@ -18,7 +19,7 @@ import {
   ChatMessage,
   AppState,
 } from './types.ts';
-import { Navigation2, Sun, Moon } from 'lucide-react';
+import { Navigation2, Sun, Moon, Activity } from 'lucide-react';
 
 const INITIAL_RAFFLES_PLACE: LocationItem = {
   name: 'Raffles Place',
@@ -66,6 +67,7 @@ export default function App() {
   const [weatherError, setWeatherError] = useState<string | null>(null);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [activeAgentStep, setActiveAgentStep] = useState<string | null>(null);
+  const [isHealthModalOpen, setIsHealthModalOpen] = useState(false);
 
   // Chat conversation
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -349,16 +351,19 @@ export default function App() {
             </button>
           </div>
 
-          <div
-            className={`hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs ${
+          {/* Health Diagnostics /api/health Button */}
+          <button
+            onClick={() => setIsHealthModalOpen(true)}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-medium transition cursor-pointer hover:scale-[1.02] active:scale-[0.98] ${
               isDay
-                ? 'bg-slate-50 border-slate-200 text-slate-700'
-                : 'bg-slate-800/80 border-slate-700/60 text-slate-300'
+                ? 'bg-emerald-50 hover:bg-emerald-100/80 border-emerald-300 text-emerald-800 shadow-sm'
+                : 'bg-emerald-950/40 hover:bg-emerald-900/60 border-emerald-700/60 text-emerald-300 shadow-sm'
             }`}
+            title="Inspect /api/health diagnostics"
           >
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-[11px] font-medium">OneMap Connected</span>
-          </div>
+            <Activity className="w-3.5 h-3.5 text-emerald-500 animate-pulse" />
+            <span className="font-mono text-[11px] font-semibold">/api/health</span>
+          </button>
         </div>
       </header>
 
@@ -465,6 +470,13 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {/* Health Diagnostics Modal */}
+      <HealthModal
+        isOpen={isHealthModalOpen}
+        onClose={() => setIsHealthModalOpen(false)}
+        theme={theme}
+      />
     </div>
   );
 }

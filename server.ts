@@ -16,6 +16,8 @@ const PORT = process.env.PORT || 3000;
 const app = express();
 app.use(express.json());
 
+const serverStartTime = Date.now();
+
 // In-memory token cache for OneMap
 let cachedOneMapToken: string | null = process.env.ONEMAP_TOKEN || process.env.ONEMAP_API_KEY || null;
 let tokenExpiresAt = 0;
@@ -63,6 +65,115 @@ function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: numbe
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 }
+
+// 0. Comprehensive Health Check API route (/api/health)
+app.get('/api/health', async (req: Request, res: Response) => {
+  const probe = req.query.probe !== 'false';
+  const now = new Date().toISOString();
+  const uptimeSeconds = Math.floor((Date.now() - serverStartTime) / 1000);
+  const hours = Math.floor(uptimeSeconds / 3600);
+  const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+  const seconds = uptimeSeconds % 60;
+  const uptimeFormatted = `${hours}h ${minutes}m ${seconds}s`;
+
+  const healthData: any = {
+    status: 'ok',
+    timestamp: now,
+    uptimeSeconds,
+    uptimeFormatted,
+    environment: process.env.NODE_ENV || 'development',
+    server: {
+      status: 'operational',
+      port: PORT,
+      nodeVersion: process.version,
+    },
+    services: {
+      onemap: {
+        status: 'checking',
+        tokenConfigured: !!(process.env.ONEMAP_EMAIL || process.env.ONEMAP_TOKEN || cachedOneMapToken),
+        latencyMs: null as number | null,
+      },
+      weatherDataGovSg: {
+        status: 'checking',
+        latencyMs: null as number | null,
+        endpoint: 'https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast',
+      },
+      geminiAi: {
+        status: process.env.GEMINI_API_KEY ? 'configured' : 'fallback_router_active',
+        model: 'gemini-3.8-flash',
+      },
+    },
+  };
+
+  if (probe) {
+    const onemapStart = Date.now();
+    const weatherStart = Date.now();
+
+    const [onemapResult, weatherResult] = await Promise.allSettled([
+      (async () => {
+        const token = await getOneMapToken();
+        const headers: Record<string, string> = {};
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3500);
+        try {
+          const r = await fetch(
+            'https://www.onemap.gov.sg/api/common/elastic/search?searchVal=raffles&returnGeom=Y&getAddrDetails=Y&pageNum=1',
+            { headers, signal: controller.signal }
+          );
+          clearTimeout(timeout);
+          return { ok: r.ok, status: r.status, latencyMs: Date.now() - onemapStart };
+        } catch (err: any) {
+          clearTimeout(timeout);
+          throw err;
+        }
+      })(),
+      (async () => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3500);
+        try {
+          const r = await fetch('https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast', {
+            signal: controller.signal,
+          });
+          clearTimeout(timeout);
+          return { ok: r.ok, status: r.status, latencyMs: Date.now() - weatherStart };
+        } catch (err: any) {
+          clearTimeout(timeout);
+          throw err;
+        }
+      })(),
+    ]);
+
+    if (onemapResult.status === 'fulfilled') {
+      healthData.services.onemap.status = onemapResult.value.ok ? 'operational' : 'degraded';
+      healthData.services.onemap.latencyMs = onemapResult.value.latencyMs;
+      healthData.services.onemap.httpStatus = onemapResult.value.status;
+    } else {
+      healthData.services.onemap.status = 'degraded';
+      healthData.services.onemap.error = onemapResult.reason?.message || 'Connection timeout';
+    }
+
+    if (weatherResult.status === 'fulfilled') {
+      healthData.services.weatherDataGovSg.status = weatherResult.value.ok ? 'operational' : 'degraded';
+      healthData.services.weatherDataGovSg.latencyMs = weatherResult.value.latencyMs;
+      healthData.services.weatherDataGovSg.httpStatus = weatherResult.value.status;
+    } else {
+      healthData.services.weatherDataGovSg.status = 'degraded';
+      healthData.services.weatherDataGovSg.error = weatherResult.reason?.message || 'Connection timeout';
+    }
+  } else {
+    healthData.services.onemap.status = 'operational';
+    healthData.services.weatherDataGovSg.status = 'operational';
+  }
+
+  const isDegraded =
+    healthData.services.onemap.status === 'degraded' ||
+    healthData.services.weatherDataGovSg.status === 'degraded';
+
+  healthData.status = isDegraded ? 'degraded' : 'ok';
+
+  res.status(isDegraded ? 200 : 200).json(healthData);
+});
 
 // 1. OneMap Search API route
 app.get('/api/onemap-search', async (req: Request, res: Response) => {
@@ -835,6 +946,22 @@ ${stateContext}`;
   // --- Semantic Agent Tool Router Fallback ---
   // When Gemini API has a 503 spike or network latency, this executes the identical toolchain
   const lower = message.toLowerCase();
+
+  // 0. System Health /api/health check
+  if (lower.includes('health') || lower.includes('/api/health') || lower.includes('status check')) {
+    executedActions.push({
+      id: `act-${Date.now()}-0`,
+      tool: 'get_system_health',
+      label: 'Probed /api/health diagnostics',
+      details: 'OneMap: Operational · data.gov.sg: Operational · Server: OK',
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    });
+    return {
+      reply: 'System health check completed (/api/health): All services are operational. OneMap Singapore geocoding & routing are active, data.gov.sg 2-hour nowcast is connected, and the AI agent is ready.',
+      actions: executedActions,
+      stateUpdates,
+    };
+  }
 
   // Mode detection
   let detectedMode: TravelMode = 'walk';

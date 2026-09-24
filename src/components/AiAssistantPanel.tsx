@@ -67,6 +67,10 @@ export const AiAssistantPanel: React.FC<AiAssistantPanelProps> = ({
       label: '🔀 Swap Endpoints',
       prompt: 'Swap the starting point and destination.',
     },
+    {
+      label: '⚡ /api/health Check',
+      prompt: 'Check /api/health and verify live OneMap and weather connection.',
+    },
   ];
 
   return (

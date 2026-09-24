@@ -76,3 +76,36 @@ export interface AppState {
   currentRoute: RouteData | null;
   currentWeather: WeatherData | null;
 }
+
+export interface HealthReport {
+  status: 'ok' | 'degraded' | 'error';
+  timestamp: string;
+  uptimeSeconds: number;
+  uptimeFormatted: string;
+  environment: string;
+  server: {
+    status: string;
+    port: number | string;
+    nodeVersion: string;
+  };
+  services: {
+    onemap: {
+      status: 'operational' | 'degraded';
+      tokenConfigured: boolean;
+      latencyMs: number | null;
+      httpStatus?: number;
+      error?: string;
+    };
+    weatherDataGovSg: {
+      status: 'operational' | 'degraded';
+      latencyMs: number | null;
+      endpoint: string;
+      httpStatus?: number;
+      error?: string;
+    };
+    geminiAi: {
+      status: string;
+      model: string;
+    };
+  };
+}
