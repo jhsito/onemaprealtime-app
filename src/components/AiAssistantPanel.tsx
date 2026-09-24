@@ -6,7 +6,6 @@ import {
   Bot,
   User,
   CheckCircle2,
-  Compass,
   Zap,
 } from 'lucide-react';
 import { ChatMessage, AgentAction, ThemeMode } from '../types.ts';
@@ -43,40 +42,41 @@ export const AiAssistantPanel: React.FC<AiAssistantPanelProps> = ({
 
   const samplePrompts = [
     {
-      label: '⭐ Primary Course Demo',
-      prompt: 'How do I get from Raffles Place to Marina Bay Sands, and what will the weather be like for the next 2 hours?',
+      label: '🌦️ Weather in Bedok',
+      prompt: "What's the weather in Bedok?",
       highlight: true,
     },
     {
-      label: '🚴 Orchard to Gardens by the Bay',
-      prompt: 'Show me cycling directions from Orchard to Gardens by the Bay.',
+      label: '🌧️ Will it rain in Jurong?',
+      prompt: 'Will it rain in Jurong?',
+      highlight: true,
     },
     {
-      label: '🌦️ Marina Bay 2-Hr Weather',
-      prompt: "What's the weather around Marina Bay for the next 2 hours?",
+      label: '📍 Forecast for Tampines',
+      prompt: 'Show me the 2-hour forecast for Tampines.',
     },
     {
-      label: '🚶 Walk Raffles to MBS + Weather',
-      prompt: 'Show me walking directions from Raffles Place to Marina Bay Sands and check the weather.',
+      label: '🏙️ Weather in Orchard',
+      prompt: "How's the weather in Orchard?",
     },
     {
-      label: '🔄 Switch to Cycling',
-      prompt: 'Change the current route to cycling.',
+      label: '✈️ Weather around Changi',
+      prompt: "What's the weather around Changi?",
     },
     {
-      label: '🔀 Swap Endpoints',
-      prompt: 'Swap the starting point and destination.',
+      label: '🇸🇬 Singapore Overview',
+      prompt: "Show me Singapore's current 2-hour forecast.",
     },
     {
       label: '⚡ /api/health Check',
-      prompt: 'Check /api/health and verify live OneMap and weather connection.',
+      prompt: 'Check /api/health status.',
     },
   ];
 
   return (
     <div
-      className={`backdrop-blur rounded-2xl p-4 shadow-xl flex flex-col h-full min-h-[420px] border transition-colors ${
-        isDay ? 'bg-white/95 border-slate-200 shadow-slate-200/50' : 'bg-slate-900/90 border-slate-800'
+      className={`rounded-2xl p-5 shadow-xl flex flex-col h-full border transition-all duration-200 ${
+        isDay ? 'bg-white border-slate-200 shadow-slate-200/50' : 'bg-slate-900/90 border-slate-800 shadow-2xl'
       }`}
     >
       {/* Header */}
@@ -85,29 +85,29 @@ export const AiAssistantPanel: React.FC<AiAssistantPanelProps> = ({
           isDay ? 'border-slate-200' : 'border-slate-800'
         }`}
       >
-        <div className="flex items-center gap-2">
-          <div className="p-1.5 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-600 text-white shadow-sm">
+        <div className="flex items-center gap-2.5">
+          <div className="p-2 rounded-xl bg-gradient-to-tr from-sky-500 to-indigo-600 text-white shadow-sm">
             <Sparkles className="w-4 h-4" />
           </div>
           <div>
             <h2
-              className={`text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 ${
-                isDay ? 'text-slate-800' : 'text-slate-100'
+              className={`text-sm font-bold tracking-tight flex items-center gap-2 ${
+                isDay ? 'text-slate-900' : 'text-slate-100'
               }`}
             >
-              <span>AI Travel Assistant</span>
+              <span>AI Weather Assistant</span>
               <span
-                className={`px-1.5 py-0.2 rounded text-[10px] font-mono border ${
+                className={`px-1.5 py-0.5 rounded text-[10px] font-mono border ${
                   isDay
-                    ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
-                    : 'bg-indigo-950 text-indigo-300 border-indigo-800/60'
+                    ? 'bg-sky-50 text-sky-700 border-sky-200'
+                    : 'bg-sky-950 text-sky-300 border-sky-800/60'
                 }`}
               >
-                Agentic
+                Live Nowcast
               </span>
             </h2>
-            <div className={`text-[10px] ${isDay ? 'text-slate-500' : 'text-slate-400'}`}>
-              OneMap + data.gov.sg live tool user
+            <div className={`text-[11px] ${isDay ? 'text-slate-500' : 'text-slate-400'}`}>
+              data.gov.sg official 2-hour forecast agent
             </div>
           </div>
         </div>
@@ -116,12 +116,12 @@ export const AiAssistantPanel: React.FC<AiAssistantPanelProps> = ({
       {/* Suggested Prompts Pill Deck */}
       <div className="mb-3">
         <div
-          className={`text-[10px] font-semibold uppercase tracking-wider mb-1.5 flex items-center gap-1 ${
+          className={`text-[10px] font-bold uppercase tracking-wider mb-1.5 flex items-center gap-1 ${
             isDay ? 'text-slate-500' : 'text-slate-400'
           }`}
         >
           <Zap className="w-3 h-3 text-amber-500" />
-          <span>Demo Prompts (Click to test agent):</span>
+          <span>Ask about Singapore weather:</span>
         </div>
         <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 scrollbar-none">
           {samplePrompts.map((p, idx) => (
@@ -129,14 +129,14 @@ export const AiAssistantPanel: React.FC<AiAssistantPanelProps> = ({
               key={idx}
               disabled={isLoading}
               onClick={() => onSendMessage(p.prompt)}
-              className={`shrink-0 text-left px-2.5 py-1 rounded-lg text-[11px] transition cursor-pointer border ${
+              className={`text-xs px-2.5 py-1 rounded-lg border whitespace-nowrap transition cursor-pointer font-medium disabled:opacity-50 ${
                 p.highlight
                   ? isDay
-                    ? 'bg-blue-50 hover:bg-blue-100 text-blue-800 border-blue-300 font-semibold shadow-sm'
-                    : 'bg-blue-600/20 hover:bg-blue-600/30 text-blue-200 border-blue-500/40 font-semibold shadow-sm'
+                    ? 'bg-sky-50 hover:bg-sky-100 border-sky-300 text-sky-800 font-semibold'
+                    : 'bg-sky-950/60 hover:bg-sky-900/80 border-sky-700/80 text-sky-300 font-semibold'
                   : isDay
-                  ? 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200 shadow-sm'
-                  : 'bg-slate-800/80 hover:bg-slate-700/80 text-slate-300 border-slate-700/60'
+                  ? 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                  : 'bg-slate-800/80 hover:bg-slate-700 border-slate-700 text-slate-300'
               }`}
             >
               {p.label}
@@ -146,160 +146,114 @@ export const AiAssistantPanel: React.FC<AiAssistantPanelProps> = ({
       </div>
 
       {/* Messages Scroll Area */}
-      <div className="flex-1 overflow-y-auto pr-1 space-y-3 min-h-0">
-        {messages.map((msg) => (
-          <div
-            key={msg.id}
-            className={`flex flex-col gap-1.5 ${
-              msg.role === 'user' ? 'items-end' : 'items-start'
-            }`}
-          >
+      <div className="flex-1 overflow-y-auto space-y-3 pr-1 text-sm min-h-[180px] max-h-[380px]">
+        {messages.map((m) => {
+          const isUser = m.role === 'user';
+          return (
             <div
-              className={`flex items-start gap-2 max-w-[92%] ${
-                msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'
-              }`}
+              key={m.id}
+              className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
             >
               <div
-                className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5 text-xs ${
-                  msg.role === 'user'
-                    ? 'bg-blue-600 text-white'
-                    : isDay
-                    ? 'bg-slate-100 text-indigo-600 border border-slate-300'
-                    : 'bg-slate-800 text-indigo-300 border border-slate-700'
+                className={`flex gap-2 max-w-[92%] ${
+                  isUser ? 'flex-row-reverse' : 'flex-row'
                 }`}
               >
-                {msg.role === 'user' ? <User className="w-3.5 h-3.5" /> : <Bot className="w-3.5 h-3.5" />}
-              </div>
-
-              <div
-                className={`rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed ${
-                  msg.role === 'user'
-                    ? 'bg-blue-600 text-white shadow'
-                    : isDay
-                    ? 'bg-slate-50 text-slate-800 border border-slate-200 shadow-sm'
-                    : 'bg-slate-950/80 text-slate-200 border border-slate-800'
-                }`}
-              >
-                {/* Visual Agent Tool Execution Steps */}
-                {msg.actions && msg.actions.length > 0 && (
-                  <div
-                    className={`mb-2.5 pb-2.5 border-b space-y-1.5 ${
-                      isDay ? 'border-slate-200' : 'border-slate-800/80'
-                    }`}
-                  >
-                    <div
-                      className={`text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 ${
-                        isDay ? 'text-slate-600' : 'text-slate-400'
-                      }`}
-                    >
-                      <Compass className="w-3 h-3 text-blue-500" />
-                      <span>Live Agent Tool Invocations:</span>
-                    </div>
-                    {msg.actions.map((act: AgentAction) => (
-                      <div
-                        key={act.id}
-                        className={`flex items-start gap-1.5 px-2 py-1 rounded border text-[11px] ${
-                          isDay
-                            ? 'bg-white border-slate-200 text-slate-800'
-                            : 'bg-slate-900/90 border-slate-800 text-slate-200'
-                        }`}
-                      >
-                        <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0 mt-0.5" />
-                        <div className="min-w-0">
-                          <div className="font-semibold">{act.label}</div>
-                          {act.details && (
-                            <div
-                              className={`text-[10px] ${
-                                isDay ? 'text-slate-500' : 'text-slate-400'
-                              }`}
-                            >
-                              {act.details}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <div className="whitespace-pre-wrap">{msg.content}</div>
                 <div
-                  className={`text-[9px] mt-1 ${
-                    msg.role === 'user'
-                      ? 'text-blue-100 text-right'
+                  className={`w-7 h-7 rounded-xl flex items-center justify-center shrink-0 text-xs shadow-sm ${
+                    isUser
+                      ? 'bg-sky-600 text-white'
                       : isDay
-                      ? 'text-slate-400'
-                      : 'text-slate-500'
+                      ? 'bg-slate-200 text-slate-800 border border-slate-300'
+                      : 'bg-slate-800 text-slate-200 border border-slate-700'
                   }`}
                 >
-                  {msg.timestamp}
+                  {isUser ? <User className="w-3.5 h-3.5" /> : <Bot className="w-3.5 h-3.5 text-sky-400" />}
+                </div>
+
+                <div
+                  className={`p-3 rounded-2xl border ${
+                    isUser
+                      ? 'bg-sky-600 text-white border-sky-500 rounded-tr-none'
+                      : isDay
+                      ? 'bg-slate-50 border-slate-200 text-slate-800 rounded-tl-none'
+                      : 'bg-slate-800/90 border-slate-700/80 text-slate-100 rounded-tl-none'
+                  }`}
+                >
+                  <p className="text-xs sm:text-sm leading-relaxed whitespace-pre-line">{m.content}</p>
+
+                  {/* Actions / Tools Log */}
+                  {m.actions && m.actions.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-slate-700/40 space-y-1">
+                      {m.actions.map((act: AgentAction) => (
+                        <div
+                          key={act.id}
+                          className="flex items-center gap-1.5 text-[11px] font-mono text-emerald-400"
+                        >
+                          <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" />
+                          <span className="truncate">{act.label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <span
+                    className={`block text-[10px] mt-1.5 text-right ${
+                      isUser ? 'text-sky-200' : isDay ? 'text-slate-400' : 'text-slate-400'
+                    }`}
+                  >
+                    {m.timestamp}
+                  </span>
                 </div>
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
 
-        {/* Loading / Agent thinking state */}
+        {/* Live Loading / Agent Thinking Indicator */}
         {isLoading && (
-          <div className="flex items-start gap-2 max-w-[90%]">
+          <div className="flex items-start gap-2">
             <div
-              className={`w-6 h-6 rounded-full border flex items-center justify-center shrink-0 ${
-                isDay
-                  ? 'bg-slate-100 text-indigo-600 border-slate-300'
-                  : 'bg-slate-800 text-indigo-300 border-slate-700'
+              className={`w-7 h-7 rounded-xl flex items-center justify-center shrink-0 border ${
+                isDay ? 'bg-slate-200 text-slate-800 border-slate-300' : 'bg-slate-800 text-slate-200 border-slate-700'
               }`}
             >
-              <Bot className="w-3.5 h-3.5" />
+              <Bot className="w-3.5 h-3.5 text-sky-400" />
             </div>
             <div
-              className={`rounded-2xl px-3.5 py-2.5 text-xs flex items-center gap-2 border ${
-                isDay
-                  ? 'bg-slate-50 text-slate-700 border-slate-200'
-                  : 'bg-slate-950/80 text-slate-300 border-slate-800'
+              className={`p-3 rounded-2xl rounded-tl-none border flex items-center gap-2 text-xs ${
+                isDay ? 'bg-slate-50 border-slate-200 text-slate-700' : 'bg-slate-800/80 border-slate-700 text-slate-300'
               }`}
             >
-              <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-500 shrink-0" />
-              <div className="flex flex-col">
-                <span className={`font-medium ${isDay ? 'text-slate-800' : 'text-slate-200'}`}>
-                  {activeAgentStep || 'Agent deciding actions & calling live APIs...'}
-                </span>
-                <span className={`text-[10px] ${isDay ? 'text-slate-400' : 'text-slate-400'}`}>
-                  OneMap geocoding, routing & weather API
-                </span>
-              </div>
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-sky-500" />
+              <span>{activeAgentStep || 'Retrieving live 2-hour forecast...'}</span>
             </div>
           </div>
         )}
-
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Box */}
-      <form
-        onSubmit={handleSubmit}
-        className={`mt-3 pt-2 border-t flex gap-2 ${
-          isDay ? 'border-slate-200' : 'border-slate-800'
-        }`}
-      >
+      {/* Input Form */}
+      <form onSubmit={handleSubmit} className="mt-3 pt-3 border-t border-slate-800/60 flex gap-2">
         <input
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
+          placeholder="Ask about Singapore weather (e.g. Will it rain in Bedok?)..."
           disabled={isLoading}
-          placeholder="Ask assistant (e.g. 'Directions from Raffles to MBS with 2h weather')..."
-          className={`flex-1 text-xs rounded-xl px-3.5 py-2.5 border focus:outline-none focus:ring-2 focus:ring-blue-500 transition disabled:opacity-50 ${
+          className={`flex-1 px-3.5 py-2.5 text-xs rounded-xl border focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-transparent transition ${
             isDay
-              ? 'bg-slate-50 text-slate-900 placeholder-slate-400 border-slate-300'
-              : 'bg-slate-950/80 text-slate-100 placeholder-slate-500 border-slate-700/80'
+              ? 'bg-slate-50 border-slate-200 text-slate-900 placeholder:text-slate-400'
+              : 'bg-slate-950 border-slate-800 text-white placeholder:text-slate-500'
           }`}
         />
         <button
           type="submit"
-          disabled={isLoading || !input.trim()}
-          className="px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-300 dark:disabled:bg-slate-800 disabled:text-slate-500 text-white rounded-xl text-xs font-semibold transition flex items-center justify-center cursor-pointer disabled:cursor-not-allowed shadow"
-          title="Send message"
+          disabled={!input.trim() || isLoading}
+          className="px-3.5 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-white transition flex items-center justify-center cursor-pointer shadow-sm"
+          title="Send inquiry"
         >
-          <Send className="w-4 h-4" />
+          <Send className="w-3.5 h-3.5" />
         </button>
       </form>
     </div>

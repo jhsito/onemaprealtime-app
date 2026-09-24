@@ -4,36 +4,23 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { InteractiveMap } from './components/InteractiveMap.tsx';
 import { SearchHeader } from './components/SearchHeader.tsx';
-import { DirectionsPanel } from './components/DirectionsPanel.tsx';
 import { WeatherCard } from './components/WeatherCard.tsx';
 import { AiAssistantPanel } from './components/AiAssistantPanel.tsx';
 import { HealthModal } from './components/HealthModal.tsx';
 import {
-  LocationItem,
-  RouteData,
+  ForecastArea,
   WeatherData,
-  TravelMode,
   ThemeMode,
   ChatMessage,
-  AppState,
 } from './types.ts';
-import { Navigation2, Sun, Moon, Activity } from 'lucide-react';
-
-const INITIAL_RAFFLES_PLACE: LocationItem = {
-  name: 'Raffles Place',
-  address: 'Raffles Place, Downtown Core, Singapore 048616',
-  lat: 1.284349,
-  lng: 103.851072,
-  postal: '048616',
-};
+import { CloudSun, Sun, Moon, Activity, MapPin } from 'lucide-react';
 
 export default function App() {
   // Day / Night Theme State
   const [theme, setTheme] = useState<ThemeMode>(() => {
     try {
-      const saved = localStorage.getItem('sg_nav_theme');
+      const saved = localStorage.getItem('sg_weather_theme');
       return saved === 'day' || saved === 'night' ? saved : 'night';
     } catch {
       return 'night';
@@ -45,166 +32,81 @@ export default function App() {
   const toggleTheme = (newTheme: ThemeMode) => {
     setTheme(newTheme);
     try {
-      localStorage.setItem('sg_nav_theme', newTheme);
+      localStorage.setItem('sg_weather_theme', newTheme);
     } catch {
       // Ignore storage errors
     }
   };
 
-  // Core Application State
-  const [mapCenter, setMapCenter] = useState<[number, number]>([1.284349, 103.851072]);
-  const [zoom, setZoom] = useState<number>(14);
-  const [selectedLocation, setSelectedLocation] = useState<LocationItem | null>(INITIAL_RAFFLES_PLACE);
-  const [startLocation, setStartLocation] = useState<LocationItem | null>(INITIAL_RAFFLES_PLACE);
-  const [destination, setDestination] = useState<LocationItem | null>(null);
-  const [travelMode, setTravelMode] = useState<TravelMode>('walk');
-  const [currentRoute, setCurrentRoute] = useState<RouteData | null>(null);
+  // Weather State
+  const [availableAreas, setAvailableAreas] = useState<ForecastArea[]>([]);
+  const [selectedArea, setSelectedArea] = useState<string>('Bedok');
   const [currentWeather, setCurrentWeather] = useState<WeatherData | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Status & Loading States
-  const [isRoutingLoading, setIsRoutingLoading] = useState(false);
-  const [isWeatherLoading, setIsWeatherLoading] = useState(false);
-  const [weatherError, setWeatherError] = useState<string | null>(null);
-  const [isAiLoading, setIsAiLoading] = useState(false);
-  const [activeAgentStep, setActiveAgentStep] = useState<string | null>(null);
+  // Health Modal State
   const [isHealthModalOpen, setIsHealthModalOpen] = useState(false);
 
-  // Chat conversation
+  // AI Assistant State
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome-1',
       role: 'assistant',
       content:
-        'Hello! I am your agentic Singapore Travel & Navigation Assistant. I can search Singapore locations via OneMap, calculate walking, driving, cycling, and transit routes, and retrieve real-time 2-hour weather forecasts from data.gov.sg.\n\nTry the primary demo: "How do I get from Raffles Place to Marina Bay Sands, and what will the weather be like for the next 2 hours?"',
+        'Welcome to the Singapore 2-Hour Weather Assistant!\n\nI provide official live 2-hour nowcasts from data.gov.sg across all 47 Singapore forecast areas.\n\nTry asking:\n• "What\'s the weather in Bedok?"\n• "Will it rain in Jurong?"\n• "Show me the 2-hour forecast for Tampines."',
       timestamp: 'Ready',
     },
   ]);
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [activeAgentStep, setActiveAgentStep] = useState<string | null>(null);
 
-  // Initial fetch: Load 2-hour weather for default location (Raffles Place)
-  useEffect(() => {
-    fetchWeatherForLocation(INITIAL_RAFFLES_PLACE.lat, INITIAL_RAFFLES_PLACE.lng, 'City');
-  }, []);
-
-  // Fetch 2-hour weather from data.gov.sg
-  const fetchWeatherForLocation = async (lat?: number, lng?: number, areaQuery?: string) => {
-    setIsWeatherLoading(true);
-    setWeatherError(null);
+  // Fetch 2-Hour Weather from /api/weather
+  const fetchWeather = async (areaName?: string) => {
+    setIsLoading(true);
+    setError(null);
     try {
-      let url = '/api/weather';
-      if (lat !== undefined && lng !== undefined) {
-        url += `?lat=${lat}&lng=${lng}`;
-      } else if (areaQuery) {
-        url += `?area=${encodeURIComponent(areaQuery)}`;
-      }
-
+      const url = areaName ? `/api/weather?area=${encodeURIComponent(areaName)}` : '/api/weather';
       const res = await fetch(url);
       if (!res.ok) {
-        throw new Error('Weather API call failed');
+        throw new Error('Live 2-hour weather information is temporarily unavailable.');
       }
       const data = await res.json();
       if (data.status === 'ok') {
+        if (data.areas && Array.isArray(data.areas)) {
+          setAvailableAreas(data.areas);
+        }
+        setSelectedArea(data.area);
         setCurrentWeather({
           area: data.area,
           forecast: data.forecast,
-          forecastPeriod: data.forecastPeriod,
+          forecastPeriod: data.forecastPeriod || data.validPeriod?.text || 'Next 2 Hours',
           validPeriod: data.validPeriod,
           updateTime: data.updateTime,
         });
       } else {
-        setWeatherError(data.message || 'Live weather unavailable');
+        setError(data.message || 'Live 2-hour weather information is temporarily unavailable.');
       }
     } catch (err: any) {
-      setWeatherError('Live 2-hour weather temporarily unavailable');
+      setError('Live 2-hour weather information is temporarily unavailable.');
     } finally {
-      setIsWeatherLoading(false);
+      setIsLoading(false);
     }
   };
 
-  // Location selection handler
-  const handleSelectLocation = (loc: LocationItem) => {
-    const lat = loc.latitude ?? loc.lat;
-    const lng = loc.longitude ?? loc.lng;
-    const normalized: LocationItem = { ...loc, lat, lng, latitude: lat, longitude: lng };
-    setSelectedLocation(normalized);
-    setMapCenter([lat, lng]);
-    setZoom(15);
-    fetchWeatherForLocation(lat, lng, loc.name);
+  // Initial fetch on mount
+  useEffect(() => {
+    fetchWeather('Bedok');
+  }, []);
+
+  // Handle area selection from search or quick picks
+  const handleSelectArea = (areaName: string) => {
+    setSelectedArea(areaName);
+    fetchWeather(areaName);
   };
 
-  // Set as start
-  const handleSetAsStart = (loc: LocationItem) => {
-    const lat = loc.latitude ?? loc.lat;
-    const lng = loc.longitude ?? loc.lng;
-    setStartLocation({ ...loc, lat, lng, latitude: lat, longitude: lng });
-  };
-
-  // Set as destination
-  const handleSetAsDestination = (loc: LocationItem) => {
-    const lat = loc.latitude ?? loc.lat;
-    const lng = loc.longitude ?? loc.lng;
-    const normalized: LocationItem = { ...loc, lat, lng, latitude: lat, longitude: lng };
-    setDestination(normalized);
-    fetchWeatherForLocation(lat, lng, loc.name);
-  };
-
-  // Manual Get Directions
-  const handleGetDirections = async () => {
-    if (!startLocation || !destination) return;
-    setIsRoutingLoading(true);
-    try {
-      const url = `/api/onemap-route?start=${startLocation.lat},${startLocation.lng}&end=${destination.lat},${destination.lng}&routeType=${travelMode}&startName=${encodeURIComponent(
-        startLocation.name
-      )}&endName=${encodeURIComponent(destination.name)}`;
-
-      const res = await fetch(url);
-      const data = await res.json();
-      if (data.status === 0 && data.coordinates) {
-        setCurrentRoute(data);
-      } else {
-        alert(data.status_message || 'Could not compute directions between these points.');
-      }
-    } catch (err: any) {
-      alert('Routing request failed. Please check connection.');
-    } finally {
-      setIsRoutingLoading(false);
-    }
-  };
-
-  // Swap endpoints
-  const handleSwapEndpoints = async () => {
-    if (!startLocation || !destination) return;
-    const newStart = destination;
-    const newDest = startLocation;
-    setStartLocation(newStart);
-    setDestination(newDest);
-
-    if (currentRoute) {
-      setIsRoutingLoading(true);
-      try {
-        const url = `/api/onemap-route?start=${newStart.lat},${newStart.lng}&end=${newDest.lat},${newDest.lng}&routeType=${travelMode}&startName=${encodeURIComponent(
-          newStart.name
-        )}&endName=${encodeURIComponent(newDest.name)}`;
-        const res = await fetch(url);
-        const data = await res.json();
-        if (data.status === 0 && data.coordinates) {
-          setCurrentRoute(data);
-        }
-      } catch {
-        // Keep prior route
-      } finally {
-        setIsRoutingLoading(false);
-      }
-    }
-  };
-
-  // Clear route
-  const handleClearRoute = () => {
-    setCurrentRoute(null);
-    setDestination(null);
-  };
-
-  // AI Assistant message handler
-  const handleSendAiMessage = async (userPrompt: string) => {
+  // AI Chat Handler
+  const handleSendMessage = async (userPrompt: string) => {
     const userMsg: ChatMessage = {
       id: `user-${Date.now()}`,
       role: 'user',
@@ -214,19 +116,7 @@ export default function App() {
 
     setMessages((prev) => [...prev, userMsg]);
     setIsAiLoading(true);
-    setActiveAgentStep('Analyzing query and determining tools...');
-
-    // Prepare current state snapshot for AI
-    const currentState: AppState = {
-      mapCenter,
-      zoom,
-      selectedLocation,
-      startLocation,
-      destination,
-      travelMode,
-      currentRoute,
-      currentWeather,
-    };
+    setActiveAgentStep('Retrieving live 2-hour forecast...');
 
     try {
       const res = await fetch('/api/assistant/chat', {
@@ -234,8 +124,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: userPrompt,
-          history: messages.map((m) => ({ role: m.role, content: m.content })),
-          currentState,
+          currentState: { selectedArea, currentWeather },
         }),
       });
 
@@ -245,20 +134,17 @@ export default function App() {
 
       const data = await res.json();
 
-      // Apply state updates returned by agent
+      // Apply state updates from assistant (e.g. updated weather card)
       if (data.stateUpdates) {
-        const u = data.stateUpdates;
-        if (u.selectedLocation !== undefined) setSelectedLocation(u.selectedLocation);
-        if (u.startLocation !== undefined) setStartLocation(u.startLocation);
-        if (u.destination !== undefined) setDestination(u.destination);
-        if (u.travelMode !== undefined) setTravelMode(u.travelMode);
-        if (u.currentRoute !== undefined) setCurrentRoute(u.currentRoute);
-        if (u.currentWeather !== undefined) setCurrentWeather(u.currentWeather);
-        if (u.mapCenter !== undefined) setMapCenter(u.mapCenter);
-        if (u.zoom !== undefined) setZoom(u.zoom);
+        if (data.stateUpdates.currentWeather) {
+          setCurrentWeather(data.stateUpdates.currentWeather);
+        }
+        if (data.stateUpdates.selectedArea) {
+          setSelectedArea(data.stateUpdates.selectedArea);
+        }
       }
 
-      const assistantMsg: ChatMessage = {
+      const aiMsg: ChatMessage = {
         id: `ai-${Date.now()}`,
         role: 'assistant',
         content: data.reply || 'Request completed.',
@@ -266,13 +152,12 @@ export default function App() {
         actions: data.actions || [],
       };
 
-      setMessages((prev) => [...prev, assistantMsg]);
-    } catch (err: any) {
+      setMessages((prev) => [...prev, aiMsg]);
+    } catch {
       const errorMsg: ChatMessage = {
         id: `err-${Date.now()}`,
         role: 'assistant',
-        content:
-          'I encountered an issue processing your request. Please ensure the server has network access and try again.',
+        content: 'Live 2-hour weather information is temporarily unavailable.',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
       setMessages((prev) => [...prev, errorMsg]);
@@ -284,48 +169,42 @@ export default function App() {
 
   return (
     <div
-      className={`flex flex-col h-screen w-screen font-sans overflow-hidden transition-colors duration-200 ${
+      className={`min-h-screen w-screen font-sans flex flex-col transition-colors duration-200 overflow-x-hidden ${
         isDay ? 'bg-slate-100 text-slate-900' : 'bg-slate-950 text-slate-100'
       }`}
     >
-      {/* Top Header Bar */}
+      {/* Top Application Header */}
       <header
-        className={`h-14 shrink-0 backdrop-blur px-4 flex items-center justify-between z-20 border-b transition-colors duration-200 ${
-          isDay
-            ? 'bg-white/95 border-slate-200 text-slate-900 shadow-sm'
-            : 'bg-slate-900/90 border-slate-800 text-white'
+        className={`h-16 shrink-0 backdrop-blur px-4 sm:px-6 flex items-center justify-between border-b transition-colors duration-200 sticky top-0 z-30 ${
+          isDay ? 'bg-white/95 border-slate-200 shadow-sm' : 'bg-slate-900/90 border-slate-800'
         }`}
       >
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-md shadow-blue-500/20">
-            <Navigation2 className="w-4 h-4" />
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-sky-500 to-blue-600 flex items-center justify-center text-white shadow-md shadow-sky-500/20">
+            <CloudSun className="w-5 h-5" />
           </div>
           <div>
-            <h1 className="text-sm font-bold tracking-tight flex items-center gap-2">
-              <span>Singapore Travel Assistant</span>
+            <h1 className="text-base font-bold tracking-tight flex items-center gap-2">
+              <span>Singapore 2-Hour Weather Assistant</span>
               <span
-                className={`text-[10px] font-normal px-2 py-0.5 rounded-full border hidden sm:inline ${
+                className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border hidden sm:inline ${
                   isDay
-                    ? 'bg-blue-50 text-blue-700 border-blue-200'
-                    : 'bg-blue-950 text-blue-300 border-blue-800/60'
+                    ? 'bg-sky-50 text-sky-700 border-sky-200'
+                    : 'bg-sky-950 text-sky-300 border-sky-800/60'
                 }`}
               >
-                OneMap + data.gov.sg
+                data.gov.sg LIVE
               </span>
             </h1>
-            <div
-              className={`text-[10px] hidden sm:block ${
-                isDay ? 'text-slate-500' : 'text-slate-400'
-              }`}
-            >
-              Agentic navigation with live OneMap geocoding, routing & 2-hr nowcast
+            <div className={`text-[11px] hidden sm:block ${isDay ? 'text-slate-500' : 'text-slate-400'}`}>
+              Official National Environment Agency 2-Hour Nowcast
             </div>
           </div>
         </div>
 
-        {/* Header Right: Day/Night Mode Toggle & Status */}
+        {/* Controls: Day/Night Toggle & /api/health */}
         <div className="flex items-center gap-3">
-          {/* Day / Night Mode Segmented Control */}
+          {/* Day / Night Mode Toggle */}
           <div
             className={`flex items-center p-0.5 rounded-xl border transition-colors ${
               isDay ? 'bg-slate-200/80 border-slate-300' : 'bg-slate-800/80 border-slate-700/70'
@@ -337,7 +216,7 @@ export default function App() {
               onClick={() => toggleTheme('day')}
               className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
                 isDay
-                  ? 'bg-white text-blue-700 shadow-sm font-semibold'
+                  ? 'bg-white text-sky-700 shadow-sm font-semibold'
                   : 'text-slate-400 hover:text-slate-200'
               }`}
               title="Switch to Day Mode"
@@ -349,7 +228,7 @@ export default function App() {
               onClick={() => toggleTheme('night')}
               className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
                 !isDay
-                  ? 'bg-slate-700 text-blue-300 shadow-sm font-semibold'
+                  ? 'bg-slate-700 text-sky-300 shadow-sm font-semibold'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
               title="Switch to Night Mode"
@@ -359,7 +238,7 @@ export default function App() {
             </button>
           </div>
 
-          {/* Health Diagnostics /api/health Button */}
+          {/* /api/health Diagnostics Button */}
           <button
             onClick={() => setIsHealthModalOpen(true)}
             className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-medium transition cursor-pointer hover:scale-[1.02] active:scale-[0.98] ${
@@ -375,111 +254,122 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main App Workspace */}
-      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
-        {/* Left / Center Area: Map-First View */}
-        <div className="flex-1 flex flex-col relative h-[55%] lg:h-full overflow-hidden">
-          {/* Floating Search Bar on Map */}
-          <div className="absolute top-4 left-4 right-4 sm:left-6 sm:w-96 z-20">
-            <SearchHeader
-              onSelectLocation={handleSelectLocation}
-              selectedLocation={selectedLocation}
+      {/* Main App Body */}
+      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 flex flex-col gap-6">
+        {/* Search Bar & Quick Picks */}
+        <section>
+          <SearchHeader
+            availableAreas={availableAreas}
+            selectedArea={selectedArea}
+            onSelectArea={handleSelectArea}
+            theme={theme}
+            isLoading={isLoading}
+          />
+        </section>
+
+        {/* 2-Column Responsive Layout */}
+        <section className="grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1 items-start">
+          {/* Left Column: Prominent Weather Card + 47-Area Island Nowcast Overview */}
+          <div className="lg:col-span-7 flex flex-col gap-6">
+            <WeatherCard
+              weather={currentWeather}
+              isLoading={isLoading}
               theme={theme}
+              onRefresh={() => fetchWeather(selectedArea)}
+              error={error}
             />
+
+            {/* Island-wide 47 Singapore Forecast Areas Overview */}
+            {availableAreas.length > 0 && (
+              <div
+                className={`rounded-2xl p-5 border shadow-xl transition-all duration-200 ${
+                  isDay ? 'bg-white border-slate-200 shadow-slate-200/50' : 'bg-slate-900/90 border-slate-800 shadow-2xl'
+                }`}
+              >
+                <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-800/60">
+                  <div className="flex items-center gap-2">
+                    <MapPin className="w-4 h-4 text-sky-500" />
+                    <h3 className={`text-sm font-bold tracking-tight ${isDay ? 'text-slate-900' : 'text-slate-100'}`}>
+                      All Singapore Forecast Areas ({availableAreas.length})
+                    </h3>
+                  </div>
+                  <span className={`text-[11px] ${isDay ? 'text-slate-500' : 'text-slate-400'}`}>
+                    Click any area to view nowcast
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-72 overflow-y-auto pr-1">
+                  {availableAreas.map((area) => {
+                    const isSelected = selectedArea.toLowerCase() === area.name.toLowerCase();
+                    const isRain =
+                      area.forecast.toLowerCase().includes('rain') ||
+                      area.forecast.toLowerCase().includes('shower') ||
+                      area.forecast.toLowerCase().includes('thunder');
+
+                    return (
+                      <button
+                        key={area.name}
+                        onClick={() => handleSelectArea(area.name)}
+                        className={`text-left p-2.5 rounded-xl border text-xs transition cursor-pointer flex flex-col justify-between gap-1 ${
+                          isSelected
+                            ? 'bg-sky-500/20 border-sky-500 text-sky-300 font-semibold shadow-sm'
+                            : isDay
+                            ? 'bg-slate-50 hover:bg-sky-50 border-slate-200 text-slate-700'
+                            : 'bg-slate-950/60 hover:bg-slate-800 border-slate-800/80 text-slate-300'
+                        }`}
+                      >
+                        <span className="font-semibold truncate">{area.name}</span>
+                        <span
+                          className={`text-[10px] px-1.5 py-0.5 rounded truncate ${
+                            isRain
+                              ? 'bg-sky-500/20 text-sky-400 font-medium'
+                              : 'text-slate-400'
+                          }`}
+                        >
+                          {area.forecast}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* Leaflet Map with OneMap Tiles (Day / Night) */}
-          <div className="flex-1 w-full h-full">
-            <InteractiveMap
-              center={mapCenter}
-              zoom={zoom}
-              theme={theme}
-              selectedLocation={selectedLocation}
-              startLocation={startLocation}
-              destination={destination}
-              currentRoute={currentRoute}
-              currentWeather={currentWeather}
-              onSelectLocation={handleSelectLocation}
-              onSetAsStart={handleSetAsStart}
-              onSetAsDestination={handleSetAsDestination}
-            />
-          </div>
-        </div>
-
-        {/* Right Sidebar: Directions, Weather & AI Assistant */}
-        <div
-          className={`w-full lg:w-[460px] xl:w-[490px] h-[45%] lg:h-full border-t lg:border-t-0 lg:border-l flex flex-col shrink-0 overflow-y-auto z-10 transition-colors duration-200 ${
-            isDay ? 'bg-slate-50/90 border-slate-200' : 'bg-slate-950 border-slate-800'
-          }`}
-        >
-          <div className="p-4 space-y-4">
-            {/* AI Assistant Section */}
+          {/* Right Column: AI 2-Hour Weather Assistant */}
+          <div className="lg:col-span-5 h-full">
             <AiAssistantPanel
               messages={messages}
               isLoading={isAiLoading}
               theme={theme}
-              onSendMessage={handleSendAiMessage}
+              onSendMessage={handleSendMessage}
               activeAgentStep={activeAgentStep}
             />
-
-            {/* Directions Section */}
-            <DirectionsPanel
-              startLocation={startLocation}
-              destination={destination}
-              travelMode={travelMode}
-              currentRoute={currentRoute}
-              isLoading={isRoutingLoading}
-              theme={theme}
-              onSetStart={setStartLocation}
-              onSetDestination={setDestination}
-              onSetTravelMode={(mode) => {
-                setTravelMode(mode);
-                if (currentRoute && startLocation && destination) {
-                  // Re-query route with new mode
-                  const url = `/api/onemap-route?start=${startLocation.lat},${startLocation.lng}&end=${destination.lat},${destination.lng}&routeType=${mode}&startName=${encodeURIComponent(
-                    startLocation.name
-                  )}&endName=${encodeURIComponent(destination.name)}`;
-                  fetch(url)
-                    .then((r) => r.json())
-                    .then((d) => {
-                      if (d.status === 0) setCurrentRoute(d);
-                    })
-                    .catch(() => {});
-                }
-              }}
-              onGetDirections={handleGetDirections}
-              onSwapEndpoints={handleSwapEndpoints}
-              onClearRoute={handleClearRoute}
-            />
-
-            {/* Weather Card Section */}
-            <WeatherCard
-              weather={currentWeather}
-              isLoading={isWeatherLoading}
-              theme={theme}
-              onRefresh={() => {
-                if (selectedLocation) {
-                  fetchWeatherForLocation(selectedLocation.lat, selectedLocation.lng, selectedLocation.name);
-                } else {
-                  fetchWeatherForLocation(undefined, undefined, 'City');
-                }
-              }}
-              error={weatherError}
-            />
-
-            {/* Footer Disclaimer */}
-            <footer
-              className={`text-[10px] text-center py-2 border-t leading-relaxed transition-colors ${
-                isDay ? 'border-slate-200 text-slate-400' : 'border-slate-900 text-slate-500'
-              }`}
-            >
-              This is an SMU course project and is not affiliated with or endorsed by OneMap, SLA, data.gov.sg, or the Singapore Government.
-            </footer>
           </div>
-        </div>
-      </div>
+        </section>
+      </main>
 
-      {/* Health Diagnostics Modal */}
+      {/* Global Footer */}
+      <footer
+        className={`shrink-0 py-3 px-4 border-t text-center text-xs transition-colors duration-200 ${
+          isDay ? 'border-slate-200 bg-white text-slate-500' : 'border-slate-800 bg-slate-900/60 text-slate-400'
+        }`}
+      >
+        <p>
+          Official Singapore weather data provided by{' '}
+          <a
+            href="https://data.gov.sg"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline hover:text-sky-500 font-semibold"
+          >
+            data.gov.sg
+          </a>{' '}
+          (National Environment Agency). This application provides strictly 2-hour nowcasts.
+        </p>
+      </footer>
+
+      {/* Health Modal */}
       <HealthModal
         isOpen={isHealthModalOpen}
         onClose={() => setIsHealthModalOpen(false)}

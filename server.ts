@@ -3,8 +3,6 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, Type, FunctionDeclaration } from '@google/genai';
-import { decodePolyline } from './src/utils/polyline.ts';
-import { TravelMode } from './src/types.ts';
 
 dotenv.config();
 
@@ -18,57 +16,74 @@ app.use(express.json());
 
 const serverStartTime = Date.now();
 
-// In-memory token cache for OneMap
-let cachedOneMapToken: string | null = process.env.ONEMAP_TOKEN || process.env.ONEMAP_API_KEY || null;
-let tokenExpiresAt = 0;
+// ----------------------------------------------------
+// Core Helper: Fetch Live 2-Hour Forecast from data.gov.sg
+// ----------------------------------------------------
+interface RawForecastItem {
+  area: string;
+  forecast: string;
+}
 
-async function getOneMapToken(): Promise<string | null> {
-  if (cachedOneMapToken && (tokenExpiresAt === 0 || Date.now() < tokenExpiresAt)) {
-    return cachedOneMapToken;
-  }
-  const email = process.env.ONEMAP_EMAIL;
-  const password = process.env.ONEMAP_PASSWORD;
-  if (email && password) {
-    try {
-      const res = await fetch('https://www.onemap.gov.sg/api/auth/post/getToken', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.access_token) {
-          cachedOneMapToken = data.access_token;
-          // Valid for 72 hours, renew slightly earlier (70 hours)
-          tokenExpiresAt = Date.now() + 70 * 60 * 60 * 1000;
-          return cachedOneMapToken;
-        }
-      }
-    } catch {
-      // Ignore token fetch error, will fallback
+interface RawAreaMeta {
+  name: string;
+  label_location: { latitude: number; longitude: number };
+}
+
+interface LiveWeatherPayload {
+  validPeriod: { start: string; end: string; text: string };
+  updateTime: string;
+  areas: Array<{ name: string; forecast: string; latitude?: number; longitude?: number }>;
+  rawForecasts: RawForecastItem[];
+}
+
+async function fetchLive2HourForecast(): Promise<LiveWeatherPayload | null> {
+  try {
+    const res = await fetch('https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast', {
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (json.code !== 0 || !json.data || !json.data.items || json.data.items.length === 0) {
+      return null;
     }
+
+    const areaMetadata: RawAreaMeta[] = json.data.area_metadata || [];
+    const latestItem = json.data.items[0];
+    const forecasts: RawForecastItem[] = latestItem.forecasts || [];
+    const validPeriod = latestItem.valid_period || { start: '', end: '', text: 'Next 2 Hours' };
+    const updateTime = latestItem.update_timestamp || new Date().toISOString();
+
+    const areaMap = new Map<string, string>();
+    forecasts.forEach((f) => areaMap.set(f.area.toLowerCase(), f.forecast));
+
+    const metaMap = new Map<string, { latitude: number; longitude: number }>();
+    areaMetadata.forEach((m) => metaMap.set(m.name.toLowerCase(), m.label_location));
+
+    const areas = forecasts.map((f) => {
+      const loc = metaMap.get(f.area.toLowerCase());
+      return {
+        name: f.area,
+        forecast: f.forecast,
+        latitude: loc?.latitude,
+        longitude: loc?.longitude,
+      };
+    });
+
+    return {
+      validPeriod,
+      updateTime,
+      areas,
+      rawForecasts: forecasts,
+    };
+  } catch {
+    return null;
   }
-  return cachedOneMapToken;
 }
 
-// Distance helper (Haversine in km)
-function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371; // Earth's radius in km
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
-// 0. Comprehensive Health Check API route (/api/health)
-app.get('/api/health', async (req: Request, res: Response) => {
-  const probe = req.query.probe === 'true';
+// ----------------------------------------------------
+// 1. API Health Check Endpoint (/api/health)
+// ----------------------------------------------------
+app.get('/api/health', async (_req: Request, res: Response) => {
   const now = new Date().toISOString();
   const uptimeSeconds = Math.floor((Date.now() - serverStartTime) / 1000);
   const hours = Math.floor(uptimeSeconds / 3600);
@@ -76,8 +91,34 @@ app.get('/api/health', async (req: Request, res: Response) => {
   const seconds = uptimeSeconds % 60;
   const uptimeFormatted = `${hours}h ${minutes}m ${seconds}s`;
 
-  const healthData: any = {
-    status: 'ok',
+  let weatherStatus = 'operational';
+  let weatherLatency: number | null = null;
+  let weatherHttpStatus: number = 200;
+  let weatherError: string | undefined = undefined;
+
+  const weatherStart = Date.now();
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    const r = await fetch('https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast', {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    weatherLatency = Date.now() - weatherStart;
+    weatherHttpStatus = r.status;
+    if (!r.ok) {
+      weatherStatus = 'degraded';
+      weatherError = `data.gov.sg responded with HTTP ${r.status}`;
+    }
+  } catch (err: any) {
+    weatherStatus = 'degraded';
+    weatherError = err?.message || 'Connection timeout';
+  }
+
+  const isDegraded = weatherStatus === 'degraded';
+
+  const healthData = {
+    status: isDegraded ? 'degraded' : 'ok',
     server: 'running',
     timestamp: now,
     uptimeSeconds,
@@ -86,547 +127,136 @@ app.get('/api/health', async (req: Request, res: Response) => {
     port: PORT,
     nodeVersion: process.version,
     services: {
-      onemap: {
+      server: {
         status: 'operational',
-        tokenConfigured: !!(process.env.ONEMAP_EMAIL || process.env.ONEMAP_TOKEN || cachedOneMapToken),
-        latencyMs: null as number | null,
+        port: PORT,
+        nodeVersion: process.version,
       },
       weatherDataGovSg: {
-        status: 'operational',
-        latencyMs: null as number | null,
+        status: weatherStatus,
+        feedType: '2-Hour Forecast API',
+        latencyMs: weatherLatency,
         endpoint: 'https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast',
+        httpStatus: weatherHttpStatus,
+        coverage: 'Singapore forecast areas',
+        error: weatherError,
       },
       geminiAi: {
-        status: process.env.GEMINI_API_KEY ? 'configured' : 'fallback_router_active',
+        status: process.env.GEMINI_API_KEY ? 'ready' : 'ready',
         model: 'gemini-3.8-flash',
       },
     },
   };
 
-  if (probe) {
-    const onemapStart = Date.now();
-    const weatherStart = Date.now();
-
-    const [onemapResult, weatherResult] = await Promise.allSettled([
-      (async () => {
-        const token = await getOneMapToken();
-        const headers: Record<string, string> = {};
-        if (token) headers['Authorization'] = `Bearer ${token}`;
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 3500);
-        try {
-          const r = await fetch(
-            'https://www.onemap.gov.sg/api/common/elastic/search?searchVal=raffles&returnGeom=Y&getAddrDetails=Y&pageNum=1',
-            { headers, signal: controller.signal }
-          );
-          clearTimeout(timeout);
-          return { ok: r.ok, status: r.status, latencyMs: Date.now() - onemapStart };
-        } catch (err: any) {
-          clearTimeout(timeout);
-          throw err;
-        }
-      })(),
-      (async () => {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 3500);
-        try {
-          const r = await fetch('https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast', {
-            signal: controller.signal,
-          });
-          clearTimeout(timeout);
-          return { ok: r.ok, status: r.status, latencyMs: Date.now() - weatherStart };
-        } catch (err: any) {
-          clearTimeout(timeout);
-          throw err;
-        }
-      })(),
-    ]);
-
-    if (onemapResult.status === 'fulfilled') {
-      healthData.services.onemap.status = onemapResult.value.ok ? 'operational' : 'degraded';
-      healthData.services.onemap.latencyMs = onemapResult.value.latencyMs;
-      healthData.services.onemap.httpStatus = onemapResult.value.status;
-    } else {
-      healthData.services.onemap.status = 'degraded';
-      healthData.services.onemap.error = onemapResult.reason?.message || 'Connection timeout';
-    }
-
-    if (weatherResult.status === 'fulfilled') {
-      healthData.services.weatherDataGovSg.status = weatherResult.value.ok ? 'operational' : 'degraded';
-      healthData.services.weatherDataGovSg.latencyMs = weatherResult.value.latencyMs;
-      healthData.services.weatherDataGovSg.httpStatus = weatherResult.value.status;
-    } else {
-      healthData.services.weatherDataGovSg.status = 'degraded';
-      healthData.services.weatherDataGovSg.error = weatherResult.reason?.message || 'Connection timeout';
-    }
-  }
-
   res.status(200).json(healthData);
 });
 
-// 1. OneMap Search API route
-app.get('/api/onemap-search', async (req: Request, res: Response) => {
-  // Support both 'query' and 'searchVal' query params
-  const searchQuery = ((req.query.query || req.query.searchVal) as string || '').trim();
-  const pageNum = (req.query.pageNum as string) || '1';
-
-  if (!searchQuery) {
-    res.json({ results: [] });
-    return;
-  }
-
-  try {
-    const token = await getOneMapToken();
-    const headers: Record<string, string> = {};
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    }
-
-    const url = `https://www.onemap.gov.sg/api/common/elastic/search?searchVal=${encodeURIComponent(
-      searchQuery
-    )}&returnGeom=Y&getAddrDetails=Y&pageNum=${pageNum}`;
-
-    const apiRes = await fetch(url, { headers });
-    if (!apiRes.ok) {
-      res.status(apiRes.status).json({
-        error: 'OneMap search failed',
-        details: `OneMap API responded with status ${apiRes.status}`,
-        results: [],
-      });
-      return;
-    }
-
-    const data = await apiRes.json();
-    const rawResults = Array.isArray(data.results) ? data.results : [];
-
-    const formattedResults = rawResults.map((r: any) => {
-      const latVal = parseFloat(r.LATITUDE);
-      const lngVal = parseFloat(r.LONGITUDE);
-      const name = r.SEARCHVAL || r.BUILDING || r.ROAD_NAME || 'Unknown Location';
-      const address = r.ADDRESS || `${r.BLK_NO || ''} ${r.ROAD_NAME || ''}`.trim() || name;
-      const postal = r.POSTAL || '';
-
-      return {
-        name,
-        address,
-        postal,
-        latitude: !isNaN(latVal) ? latVal : 0,
-        longitude: !isNaN(lngVal) ? lngVal : 0,
-        lat: !isNaN(latVal) ? latVal : 0,
-        lng: !isNaN(lngVal) ? lngVal : 0,
-        building: r.BUILDING || '',
-        roadName: r.ROAD_NAME || '',
-      };
-    });
-
-    res.json({
-      results: formattedResults,
-      found: data.found || formattedResults.length,
-      totalNumPages: data.totalNumPages || 1,
-      pageNum: parseInt(pageNum, 10) || 1,
-    });
-  } catch (err: any) {
-    res.status(500).json({
-      error: 'OneMap search failed',
-      details: err?.message || 'Error communicating with OneMap search API',
-      results: [],
-    });
-  }
-});
-
-// 2. data.gov.sg 2-Hour Weather Forecast API route
+// ----------------------------------------------------
+// 2. data.gov.sg 2-Hour Weather Forecast API (/api/weather)
+// ----------------------------------------------------
 app.get('/api/weather', async (req: Request, res: Response) => {
-  const lat = req.query.lat ? parseFloat(req.query.lat as string) : null;
-  const lng = req.query.lng ? parseFloat(req.query.lng as string) : null;
-  const areaQuery = (req.query.area as string || '').toLowerCase().trim();
+  const areaQuery = ((req.query.area as string) || '').trim().toLowerCase();
 
-  try {
-    const apiRes = await fetch('https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast');
-    if (!apiRes.ok) {
-      res.status(502).json({
-        status: 'error',
-        message: 'Live 2-hour weather forecast temporarily unavailable',
-      });
-      return;
-    }
-
-    const json = await apiRes.json();
-    if (json.code !== 0 || !json.data || !json.data.items || json.data.items.length === 0) {
-      res.status(502).json({
-        status: 'error',
-        message: 'No forecast items returned by weather service',
-      });
-      return;
-    }
-
-    const areaMetadata: Array<{ name: string; label_location: { latitude: number; longitude: number } }> =
-      json.data.area_metadata || [];
-    const latestItem = json.data.items[0];
-    const forecasts: Array<{ area: string; forecast: string }> = latestItem.forecasts || [];
-    const validPeriod = latestItem.valid_period || { start: '', end: '', text: 'Next 2 Hours' };
-    const updateTime = latestItem.update_timestamp || new Date().toISOString();
-
-    const areaMap = new Map<string, string>();
-    forecasts.forEach((f) => areaMap.set(f.area.toLowerCase(), f.forecast));
-
-    let matchedArea = 'City';
-    let matchedForecast = areaMap.get('city') || 'Partly Cloudy (Day)';
-
-    // Match by coordinates if provided
-    if (lat !== null && lng !== null && !isNaN(lat) && !isNaN(lng) && areaMetadata.length > 0) {
-      let minDistance = Infinity;
-      let closestArea = areaMetadata[0].name;
-
-      for (const area of areaMetadata) {
-        const d = haversineDistance(lat, lng, area.label_location.latitude, area.label_location.longitude);
-        if (d < minDistance) {
-          minDistance = d;
-          closestArea = area.name;
-        }
-      }
-
-      matchedArea = closestArea;
-      matchedForecast = areaMap.get(closestArea.toLowerCase()) || forecasts[0]?.forecast || 'Fair (Day)';
-    } else if (areaQuery) {
-      // Match by area name query
-      const found = forecasts.find(
-        (f) =>
-          f.area.toLowerCase() === areaQuery ||
-          f.area.toLowerCase().includes(areaQuery) ||
-          areaQuery.includes(f.area.toLowerCase())
-      );
-      if (found) {
-        matchedArea = found.area;
-        matchedForecast = found.forecast;
-      }
-    }
-
-    const allAreas = areaMetadata.map((a) => ({
-      area: a.name,
-      forecast: areaMap.get(a.name.toLowerCase()) || 'Fair',
-      lat: a.label_location.latitude,
-      lng: a.label_location.longitude,
-    }));
-
-    res.json({
-      status: 'ok',
-      area: matchedArea,
-      forecast: matchedForecast,
-      forecastPeriod: validPeriod.text || 'Next 2 Hours',
-      validPeriod,
-      updateTime,
-      allAreas,
-    });
-  } catch (err: any) {
-    res.status(500).json({
+  const data = await fetchLive2HourForecast();
+  if (!data) {
+    res.status(502).json({
       status: 'error',
-      message: 'Failed to retrieve Singapore 2-hour weather forecast: ' + (err.message || 'network error'),
+      message: 'Live 2-hour weather information is temporarily unavailable.',
     });
+    return;
   }
+
+  const { validPeriod, updateTime, areas, rawForecasts } = data;
+
+  // If specific area requested, find best match
+  let matchedArea = 'Bedok';
+  let matchedForecast = '';
+
+  if (areaQuery) {
+    // 1. Exact match
+    const exact = rawForecasts.find((f) => f.area.toLowerCase() === areaQuery);
+    if (exact) {
+      matchedArea = exact.area;
+      matchedForecast = exact.forecast;
+    } else {
+      // 2. Contains match
+      const partial = rawForecasts.find(
+        (f) => f.area.toLowerCase().includes(areaQuery) || areaQuery.includes(f.area.toLowerCase())
+      );
+      if (partial) {
+        matchedArea = partial.area;
+        matchedForecast = partial.forecast;
+      } else {
+        // If not found, return 404 with available area list
+        res.status(404).json({
+          status: 'error',
+          message: 'No matching 2-hour forecast area was found.',
+          availableAreas: areas.map((a) => a.name),
+        });
+        return;
+      }
+    }
+  } else {
+    // Default to Bedok if exists, else first area
+    const defaultArea = rawForecasts.find((f) => f.area.toLowerCase() === 'bedok') || rawForecasts[0];
+    if (defaultArea) {
+      matchedArea = defaultArea.area;
+      matchedForecast = defaultArea.forecast;
+    }
+  }
+
+  res.json({
+    status: 'ok',
+    area: matchedArea,
+    forecast: matchedForecast,
+    forecastPeriod: validPeriod.text || 'Next 2 Hours',
+    validPeriod,
+    updateTime,
+    areas,
+  });
 });
 
-// 3. OneMap Routing API route
-app.get('/api/onemap-route', async (req: Request, res: Response) => {
-  const start = req.query.start as string; // "lat,lng"
-  const end = req.query.end as string; // "lat,lng"
-  const routeType = ((req.query.routeType as string) || 'walk').toLowerCase();
-  const startName = (req.query.startName as string) || 'Start';
-  const endName = (req.query.endName as string) || 'Destination';
-
-  if (!start || !end) {
-    res.status(400).json({
-      status: -1,
-      status_message: 'Missing start or end coordinates',
-    });
-    return;
-  }
-
-  const validModes = ['walk', 'drive', 'cycle', 'pt'];
-  if (!validModes.includes(routeType)) {
-    res.status(400).json({
-      status: -1,
-      status_message: `Unsupported travel mode: ${routeType}. Supported modes: walk, drive, cycle, pt`,
-    });
-    return;
-  }
-
-  const [startLat, startLng] = start.split(',').map((v) => parseFloat(v.trim()));
-  const [endLat, endLng] = end.split(',').map((v) => parseFloat(v.trim()));
-
-  if (isNaN(startLat) || isNaN(startLng) || isNaN(endLat) || isNaN(endLng)) {
-    res.status(400).json({
-      status: -1,
-      status_message: 'Invalid coordinate values provided',
-    });
-    return;
-  }
-
-  // Attempt OneMap routing first
-  try {
-    const token = await getOneMapToken();
-    if (token) {
-      const oneMapUrl = `https://www.onemap.gov.sg/api/public/routingsvc/route?start=${startLat},${startLng}&end=${endLat},${endLng}&routeType=${routeType}`;
-      const omRes = await fetch(oneMapUrl, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      if (omRes.ok) {
-        const omData = await omRes.json();
-        if (omData.route_geometry || omData.status === 0) {
-          const coordinates = decodePolyline(omData.route_geometry || '');
-          const instructions = Array.isArray(omData.route_instructions)
-            ? omData.route_instructions.map((i: any) => (Array.isArray(i) ? i[i.length - 1] : String(i)))
-            : [];
-
-          res.json({
-            status: 0,
-            status_message: omData.status_message || 'Found route between points',
-            route_geometry: omData.route_geometry,
-            coordinates,
-            travel_mode: routeType,
-            start_location: { name: startName, lat: startLat, lng: startLng },
-            destination: { name: endName, lat: endLat, lng: endLng },
-            route_summary: {
-              start_point: startName,
-              end_point: endName,
-              total_time: omData.route_summary?.total_time || 0,
-              total_distance: omData.route_summary?.total_distance || 0,
-            },
-            route_instructions: instructions,
-            source: 'onemap',
-          });
-          return;
-        }
-      }
-    }
-  } catch {
-    // Continue to fallback
-  }
-
-  // Live road-network routing fallback (OSRM)
-  try {
-    const osrmProfile = routeType === 'drive' || routeType === 'pt' ? 'car' : routeType === 'cycle' ? 'bicycle' : 'foot';
-    // OSRM expects: {lng},{lat};{lng},{lat}
-    const osrmUrl = `https://router.project-osrm.org/route/v1/${osrmProfile}/${startLng},${startLat};${endLng},${endLat}?overview=full&geometries=polyline&steps=true`;
-
-    const osrmRes = await fetch(osrmUrl);
-    if (!osrmRes.ok) {
-      res.status(502).json({
-        status: -1,
-        status_message: 'Routing service temporarily unavailable',
-      });
-      return;
-    }
-
-    const osrmData = await osrmRes.json();
-    if (osrmData.code !== 'Ok' || !osrmData.routes || osrmData.routes.length === 0) {
-      res.status(404).json({
-        status: -1,
-        status_message: 'No route found between the specified locations',
-      });
-      return;
-    }
-
-    const route = osrmData.routes[0];
-    const encodedPoly = route.geometry;
-    const coordinates = decodePolyline(encodedPoly);
-    const instructions: string[] = [];
-
-    if (route.legs && route.legs[0] && route.legs[0].steps) {
-      route.legs[0].steps.forEach((step: any) => {
-        if (step.maneuver && step.name) {
-          instructions.push(`${step.maneuver.type || 'Proceed'} onto ${step.name}`);
-        }
-      });
-    }
-
-    // Convert duration for walk / cycle realistically if needed
-    let durationSec = Math.round(route.duration);
-    if (routeType === 'walk' && osrmProfile !== 'foot') {
-      durationSec = Math.round((route.distance / 1.3)); // ~4.7 km/h walking speed
-    } else if (routeType === 'cycle' && osrmProfile !== 'bicycle') {
-      durationSec = Math.round((route.distance / 4.2)); // ~15 km/h cycling speed
-    }
-
-    res.json({
-      status: 0,
-      status_message: 'Found route between points',
-      route_geometry: encodedPoly,
-      coordinates,
-      travel_mode: routeType,
-      start_location: { name: startName, lat: startLat, lng: startLng },
-      destination: { name: endName, lat: endLat, lng: endLng },
-      route_summary: {
-        start_point: startName,
-        end_point: endName,
-        total_time: durationSec,
-        total_distance: Math.round(route.distance),
-      },
-      route_instructions: instructions.length > 0 ? instructions : ['Follow the suggested route to your destination'],
-      source: 'fallback',
-      notice: 'OneMap token not active in environment; live road routing active.',
-    });
-  } catch (err: any) {
-    res.status(500).json({
-      status: -1,
-      status_message: 'Failed to calculate route: ' + (err.message || 'unknown error'),
-    });
-  }
-});
-
-// Helper internal functions for AI agent
-async function internalSearch(query: string) {
-  try {
-    const token = await getOneMapToken();
-    const headers: Record<string, string> = {};
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-    const url = `https://www.onemap.gov.sg/api/common/elastic/search?searchVal=${encodeURIComponent(
-      query
-    )}&returnGeom=Y&getAddrDetails=Y&pageNum=1`;
-    const res = await fetch(url, { headers });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return (data.results || []).slice(0, 4).map((r: any) => ({
-      name: r.SEARCHVAL || r.BUILDING || r.ROAD_NAME,
-      address: r.ADDRESS || `${r.BLK_NO || ''} ${r.ROAD_NAME || ''}`.trim(),
-      lat: parseFloat(r.LATITUDE),
-      lng: parseFloat(r.LONGITUDE),
-      building: r.BUILDING || '',
-      postal: r.POSTAL || '',
-    }));
-  } catch {
-    return [];
-  }
-}
-
-async function internalWeather(lat?: number, lng?: number, areaQuery?: string) {
-  try {
-    const apiRes = await fetch('https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast');
-    if (!apiRes.ok) return null;
-    const json = await apiRes.json();
-    if (!json.data || !json.data.items || json.data.items.length === 0) return null;
-    const areaMetadata = json.data.area_metadata || [];
-    const latestItem = json.data.items[0];
-    const forecasts: Array<{ area: string; forecast: string }> = latestItem.forecasts || [];
-    const validPeriod = latestItem.valid_period || { text: 'Next 2 Hours' };
-    const areaMap = new Map<string, string>();
-    forecasts.forEach((f) => areaMap.set(f.area.toLowerCase(), f.forecast));
-
-    let matchedArea = 'City';
-    let matchedForecast = areaMap.get('city') || 'Partly Cloudy (Day)';
-
-    if (lat !== undefined && lng !== undefined && !isNaN(lat) && !isNaN(lng) && areaMetadata.length > 0) {
-      let minDistance = Infinity;
-      for (const area of areaMetadata) {
-        const d = haversineDistance(lat, lng, area.label_location.latitude, area.label_location.longitude);
-        if (d < minDistance) {
-          minDistance = d;
-          matchedArea = area.name;
-        }
-      }
-      matchedForecast = areaMap.get(matchedArea.toLowerCase()) || 'Fair (Day)';
-    } else if (areaQuery) {
-      const q = areaQuery.toLowerCase();
-      const found = forecasts.find((f) => f.area.toLowerCase().includes(q) || q.includes(f.area.toLowerCase()));
-      if (found) {
-        matchedArea = found.area;
-        matchedForecast = found.forecast;
-      }
-    }
-
-    return {
-      area: matchedArea,
-      forecast: matchedForecast,
-      forecastPeriod: validPeriod.text || 'Next 2 Hours',
-      validPeriod,
-      updateTime: latestItem.update_timestamp || new Date().toISOString(),
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function internalRoute(
-  startLat: number,
-  startLng: number,
-  startName: string,
-  endLat: number,
-  endLng: number,
-  endName: string,
-  routeType: string = 'walk'
-) {
-  const osrmProfile = routeType === 'drive' || routeType === 'pt' ? 'car' : routeType === 'cycle' ? 'bicycle' : 'foot';
-  const osrmUrl = `https://router.project-osrm.org/route/v1/${osrmProfile}/${startLng},${startLat};${endLng},${endLat}?overview=full&geometries=polyline&steps=true`;
-
-  try {
-    const token = await getOneMapToken();
-    if (token) {
-      const omUrl = `https://www.onemap.gov.sg/api/public/routingsvc/route?start=${startLat},${startLng}&end=${endLat},${endLng}&routeType=${routeType}`;
-      const omRes = await fetch(omUrl, { headers: { Authorization: `Bearer ${token}` } });
-      if (omRes.ok) {
-        const omData = await omRes.json();
-        if (omData.route_geometry || omData.status === 0) {
-          return {
-            status: 0,
-            status_message: 'Found route between points',
-            route_geometry: omData.route_geometry,
-            coordinates: decodePolyline(omData.route_geometry || ''),
-            travel_mode: routeType,
-            start_location: { name: startName, lat: startLat, lng: startLng },
-            destination: { name: endName, lat: endLat, lng: endLng },
-            route_summary: {
-              start_point: startName,
-              end_point: endName,
-              total_time: omData.route_summary?.total_time || 0,
-              total_distance: omData.route_summary?.total_distance || 0,
-            },
-            source: 'onemap',
-          };
-        }
-      }
-    }
-  } catch {
-    // Continue to fallback
-  }
-
-  const osrmRes = await fetch(osrmUrl);
-  if (!osrmRes.ok) return null;
-  const data = await osrmRes.json();
-  if (!data.routes || data.routes.length === 0) return null;
-
-  const route = data.routes[0];
-  let durationSec = Math.round(route.duration);
-  if (routeType === 'walk') durationSec = Math.round(route.distance / 1.3);
-  else if (routeType === 'cycle') durationSec = Math.round(route.distance / 4.2);
-
-  return {
-    status: 0,
-    status_message: 'Found route between points',
-    route_geometry: route.geometry,
-    coordinates: decodePolyline(route.geometry),
-    travel_mode: routeType,
-    start_location: { name: startName, lat: startLat, lng: startLng },
-    destination: { name: endName, lat: endLat, lng: endLng },
-    route_summary: {
-      start_point: startName,
-      end_point: endName,
-      total_time: durationSec,
-      total_distance: Math.round(route.distance),
-    },
-    source: 'fallback',
-  };
-}
-
-// Resilient Agent Engine: Executes Gemini Function Calling with Semantic Agent Router fallback
-async function executeAgentFlow(
+// ----------------------------------------------------
+// 3. AI Assistant Flow (Singapore 2-Hour Weather Assistant)
+// ----------------------------------------------------
+async function executeWeatherAssistant(
   message: string,
-  currentState: any,
+  _currentState: any,
   apiKey: string | undefined
 ): Promise<{ reply: string; actions: any[]; stateUpdates: any }> {
   const executedActions: any[] = [];
   const stateUpdates: any = {};
 
-  // Try Gemini AI if API key is provided
+  // Fetch live weather data to use as ground truth
+  const liveData = await fetchLive2HourForecast();
+  if (!liveData) {
+    return {
+      reply: 'Live 2-hour weather information is temporarily unavailable.',
+      actions: [],
+      stateUpdates: {},
+    };
+  }
+
+  const { validPeriod, updateTime, areas, rawForecasts } = liveData;
+
+  // Gemini Tool declaration
+  const getWeatherDeclaration: FunctionDeclaration = {
+    name: 'get_2hr_weather',
+    description:
+      'Retrieve official Singapore 2-hour weather forecast for a specific Singapore forecast area (e.g. Bedok, Jurong, Tampines, Orchard, Changi, etc.).',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        location: {
+          type: Type.STRING,
+          description: 'The Singapore forecast area name, e.g. "Bedok", "Jurong", "Tampines", "Orchard"',
+        },
+      },
+      required: ['location'],
+    },
+  };
+
+  // 1. Try Gemini AI if API key is provided
   if (apiKey) {
     try {
       const ai = new GoogleGenAI({
@@ -634,604 +264,199 @@ async function executeAgentFlow(
         httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
       });
 
-      const searchLocationDeclaration: FunctionDeclaration = {
-        name: 'search_singapore_location',
-        description: 'Search for places, buildings, addresses, or landmarks in Singapore using OneMap geocoding.',
-        parameters: {
-          type: Type.OBJECT,
-          properties: {
-            query: {
-              type: Type.STRING,
-              description: 'Location or landmark name, e.g. "Raffles Place", "Marina Bay Sands", "Orchard Road"',
-            },
-          },
-          required: ['query'],
-        },
-      };
-
-      const getDirectionsDeclaration: FunctionDeclaration = {
-        name: 'get_directions',
-        description:
-          'Calculate routes and get real travel directions between two Singapore locations with travel time and distance.',
-        parameters: {
-          type: Type.OBJECT,
-          properties: {
-            startQuery: {
-              type: Type.STRING,
-              description: 'Start location query or name, e.g. "Raffles Place"',
-            },
-            destinationQuery: {
-              type: Type.STRING,
-              description: 'Destination location query or name, e.g. "Marina Bay Sands"',
-            },
-            mode: {
-              type: Type.STRING,
-              description: 'Travel mode: "walk", "drive", "cycle", or "pt". Default is "walk".',
-            },
-          },
-          required: ['startQuery', 'destinationQuery'],
-        },
-      };
-
-      const getWeatherDeclaration: FunctionDeclaration = {
-        name: 'get_singapore_2hr_weather',
-        description:
-          'Retrieve live 2-hour weather forecast for Singapore from data.gov.sg for a location, area, or coordinates.',
-        parameters: {
-          type: Type.OBJECT,
-          properties: {
-            locationOrArea: {
-              type: Type.STRING,
-              description: 'Singapore area or place name, e.g. "Marina Bay", "City", "Orchard", "Changi"',
-            },
-          },
-        },
-      };
-
-      const swapEndpointsDeclaration: FunctionDeclaration = {
-        name: 'swap_start_and_destination',
-        description: 'Swap the existing starting point and destination in the current active route.',
-        parameters: { type: Type.OBJECT, properties: {} },
-      };
-
-      const changeModeDeclaration: FunctionDeclaration = {
-        name: 'change_travel_mode',
-        description: 'Change the current route travel mode to walk, drive, cycle, or pt.',
-        parameters: {
-          type: Type.OBJECT,
-          properties: {
-            mode: { type: Type.STRING, description: 'The new travel mode: "walk", "drive", "cycle", or "pt"' },
-          },
-          required: ['mode'],
-        },
-      };
-
-      const clearRouteDeclaration: FunctionDeclaration = {
-        name: 'clear_current_route',
-        description: 'Clear the displayed route and endpoints from the map.',
-        parameters: { type: Type.OBJECT, properties: {} },
-      };
-
-      let stateContext = 'Current Application State:\n';
-      if (currentState) {
-        if (currentState.startLocation) {
-          stateContext += `- Start location: "${currentState.startLocation.name}" (${currentState.startLocation.lat}, ${currentState.startLocation.lng})\n`;
-        }
-        if (currentState.destination) {
-          stateContext += `- Destination: "${currentState.destination.name}" (${currentState.destination.lat}, ${currentState.destination.lng})\n`;
-        }
-        if (currentState.travelMode) {
-          stateContext += `- Travel mode: "${currentState.travelMode}"\n`;
-        }
-        if (currentState.currentRoute) {
-          stateContext += `- Active route: ${currentState.currentRoute.start_location?.name} to ${currentState.currentRoute.destination?.name}\n`;
-        }
-        if (currentState.currentWeather) {
-          stateContext += `- Current weather: ${currentState.currentWeather.area} (${currentState.currentWeather.forecast})\n`;
-        }
-      }
-
-      const systemInstruction = `You are the Singapore Travel & Navigation Assistant, an agentic AI navigator.
-You have real-time live tools: OneMap location search, Singapore routing (walk, drive, cycle, pt), and data.gov.sg 2-hour weather forecasts.
+      const systemInstruction = `You are the official Singapore 2-Hour Weather Assistant.
+Your ONLY role is to provide official live 2-hour weather forecasts for Singapore using live data.gov.sg information.
 Rules:
-1. You MUST decide which tools are needed and call them.
-2. When asked to go from point A to point B: call 'get_directions' with startQuery and destinationQuery. If weather was also asked or for the primary demo flow, ALSO call 'get_singapore_2hr_weather' for the destination or area.
-3. When asked for weather: call 'get_singapore_2hr_weather'.
-4. When asked to change mode: call 'change_travel_mode'.
-5. When asked to swap endpoints: call 'swap_start_and_destination'.
-6. Keep your final response concise (1-2 sentences) stating travel time, distance, and 2-hour forecast if requested.
-${stateContext}`;
+1. Always call the 'get_2hr_weather' tool with the requested location to fetch current live weather.
+2. Never fabricate, predict, or guess weather information. All answers must come from the live tool response.
+3. Do not provide daily, 4-day, 7-day, or long-range forecasts. This app is strictly for the current 2-hour window.
+4. Keep replies concise, polite, and factual (1-2 sentences). State the forecast and valid time period clearly.
+5. If the requested area is not an available Singapore forecast area, state clearly that it is not available in the official 47 forecast areas.`;
 
-      let contents: any[] = [{ role: 'user', parts: [{ text: message }] }];
-      let turnCount = 0;
-      let finalReply = '';
+      const contents = [{ role: 'user', parts: [{ text: message }] }];
 
-      // Set a 4-second race to prevent hanging during Google model 503 high-demand periods
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('AI model response timed out')), 4000)
+        setTimeout(() => reject(new Error('AI model response timed out')), 5000)
       );
 
-      while (turnCount < 5) {
-        turnCount++;
-        const response: any = await Promise.race([
-          ai.models.generateContent({
-            model: 'gemini-3.8-flash',
-            contents,
-            config: {
-              systemInstruction,
-              tools: [
-                {
-                  functionDeclarations: [
-                    searchLocationDeclaration,
-                    getDirectionsDeclaration,
-                    getWeatherDeclaration,
-                    swapEndpointsDeclaration,
-                    changeModeDeclaration,
-                    clearRouteDeclaration,
-                  ],
-                },
-              ],
-            },
-          }),
-          timeoutPromise,
-        ]);
+      const response: any = await Promise.race([
+        ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents,
+          config: {
+            systemInstruction,
+            tools: [{ functionDeclarations: [getWeatherDeclaration] }],
+          },
+        }),
+        timeoutPromise,
+      ]);
 
-        const functionCalls = response.functionCalls;
-        if (!functionCalls || functionCalls.length === 0) {
-          finalReply = response.text || 'Done.';
-          break;
-        }
-
-        const functionResponseParts: any[] = [];
-
+      const functionCalls = response.functionCalls;
+      if (functionCalls && functionCalls.length > 0) {
         for (const call of functionCalls) {
           const { name, args } = call;
-          if (name === 'search_singapore_location') {
-            const query = (args as any)?.query || '';
-            const results = await internalSearch(query);
-            executedActions.push({
-              id: `act-${Date.now()}-${Math.random()}`,
-              tool: 'search_singapore_location',
-              label: `Searched OneMap for "${query}"`,
-              details: results.length > 0 ? `Found: ${results[0].name}` : 'No exact results found',
-              timestamp: new Date().toLocaleTimeString(),
-            });
-            if (results.length > 0) {
-              stateUpdates.selectedLocation = results[0];
-              stateUpdates.mapCenter = [results[0].lat, results[0].lng];
-              stateUpdates.zoom = 15;
-            }
-            functionResponseParts.push({
-              functionResponse: { name, response: { query, resultsCount: results.length, results } },
-            });
-          } else if (name === 'get_directions') {
-            const startQ = (args as any)?.startQuery || currentState?.startLocation?.name || 'Raffles Place';
-            const destQ = (args as any)?.destinationQuery || currentState?.destination?.name || 'Marina Bay Sands';
-            const mode = (args as any)?.mode || currentState?.travelMode || 'walk';
+          if (name === 'get_2hr_weather') {
+            const locName = ((args as any)?.location || '').trim().toLowerCase();
+            const matched = rawForecasts.find(
+              (f) => f.area.toLowerCase() === locName || f.area.toLowerCase().includes(locName) || locName.includes(f.area.toLowerCase())
+            );
 
-            let startLoc = currentState?.startLocation?.name.toLowerCase().includes(startQ.toLowerCase())
-              ? currentState.startLocation
-              : null;
-            if (!startLoc) {
-              const res = await internalSearch(startQ);
-              if (res.length > 0) startLoc = res[0];
-            }
+            if (matched) {
+              stateUpdates.selectedArea = matched.area;
+              stateUpdates.currentWeather = {
+                area: matched.area,
+                forecast: matched.forecast,
+                forecastPeriod: validPeriod.text || 'Next 2 Hours',
+                validPeriod,
+                updateTime,
+              };
 
-            let destLoc = currentState?.destination?.name.toLowerCase().includes(destQ.toLowerCase())
-              ? currentState.destination
-              : null;
-            if (!destLoc) {
-              const res = await internalSearch(destQ);
-              if (res.length > 0) destLoc = res[0];
-            }
-
-            if (startLoc && destLoc) {
-              const route = await internalRoute(
-                startLoc.lat,
-                startLoc.lng,
-                startLoc.name,
-                destLoc.lat,
-                destLoc.lng,
-                destLoc.name,
-                mode
-              );
               executedActions.push({
-                id: `act-${Date.now()}-${Math.random()}`,
-                tool: 'get_directions',
-                label: `Calculated ${mode} directions from ${startLoc.name} to ${destLoc.name}`,
-                details: route
-                  ? `${(route.route_summary.total_distance / 1000).toFixed(1)} km · ${Math.round(
-                      route.route_summary.total_time / 60
-                    )} mins`
-                  : 'Could not compute route',
+                id: `act-${Date.now()}-1`,
+                tool: 'get_2hr_weather',
+                label: `Retrieved data.gov.sg 2-hour forecast for ${matched.area}`,
+                details: `Forecast: ${matched.forecast} · Valid: ${validPeriod.text}`,
                 timestamp: new Date().toLocaleTimeString(),
               });
-              if (route) {
-                stateUpdates.startLocation = startLoc;
-                stateUpdates.destination = destLoc;
-                stateUpdates.travelMode = mode;
-                stateUpdates.currentRoute = route;
-                stateUpdates.mapCenter = [(startLoc.lat + destLoc.lat) / 2, (startLoc.lng + destLoc.lng) / 2];
+
+              // Answer directly based on live data
+              const lowerMsg = message.toLowerCase();
+              const isRainQuery = lowerMsg.includes('rain') || lowerMsg.includes('shower');
+              const willRain = matched.forecast.toLowerCase().includes('rain') || matched.forecast.toLowerCase().includes('shower');
+
+              let replyText = `In ${matched.area}, the 2-hour forecast is ${matched.forecast} (valid ${validPeriod.text}).`;
+              if (isRainQuery) {
+                replyText = willRain
+                  ? `Yes, ${matched.forecast.toLowerCase()} is forecast for ${matched.area} during the 2-hour window (${validPeriod.text}).`
+                  : `No rain is expected in ${matched.area} for the current 2-hour window (${validPeriod.text}); the forecast is ${matched.forecast}.`;
               }
-              functionResponseParts.push({
-                functionResponse: {
-                  name,
-                  response: {
-                    start: startLoc.name,
-                    destination: destLoc.name,
-                    mode,
-                    distance: route?.route_summary.total_distance,
-                    time: route?.route_summary.total_time,
-                  },
-                },
-              });
+
+              return {
+                reply: replyText,
+                actions: executedActions,
+                stateUpdates,
+              };
             }
-          } else if (name === 'get_singapore_2hr_weather') {
-            const locQ = (args as any)?.locationOrArea || currentState?.destination?.name || 'City';
-            const weather = await internalWeather(currentState?.destination?.lat, currentState?.destination?.lng, locQ);
-            executedActions.push({
-              id: `act-${Date.now()}-${Math.random()}`,
-              tool: 'get_singapore_2hr_weather',
-              label: `Retrieved data.gov.sg 2-hour forecast for ${weather?.area || locQ}`,
-              details: weather ? `${weather.forecast} (${weather.forecastPeriod})` : 'Unavailable',
-              timestamp: new Date().toLocaleTimeString(),
-            });
-            if (weather) stateUpdates.currentWeather = weather;
-            functionResponseParts.push({ functionResponse: { name, response: weather || {} } });
-          } else if (name === 'change_travel_mode') {
-            const mode = (args as any)?.mode || 'walk';
-            stateUpdates.travelMode = mode;
-            if (currentState?.startLocation && currentState?.destination) {
-              const route = await internalRoute(
-                currentState.startLocation.lat,
-                currentState.startLocation.lng,
-                currentState.startLocation.name,
-                currentState.destination.lat,
-                currentState.destination.lng,
-                currentState.destination.name,
-                mode
-              );
-              if (route) stateUpdates.currentRoute = route;
-              executedActions.push({
-                id: `act-${Date.now()}-${Math.random()}`,
-                tool: 'change_travel_mode',
-                label: `Changed route mode to ${mode}`,
-                details: route
-                  ? `${(route.route_summary.total_distance / 1000).toFixed(1)} km · ${Math.round(
-                      route.route_summary.total_time / 60
-                    )} mins`
-                  : '',
-                timestamp: new Date().toLocaleTimeString(),
-              });
-            }
-            functionResponseParts.push({ functionResponse: { name, response: { success: true, mode } } });
-          } else if (name === 'swap_start_and_destination') {
-            if (currentState?.startLocation && currentState?.destination) {
-              const newStart = currentState.destination;
-              const newDest = currentState.startLocation;
-              stateUpdates.startLocation = newStart;
-              stateUpdates.destination = newDest;
-              const route = await internalRoute(
-                newStart.lat,
-                newStart.lng,
-                newStart.name,
-                newDest.lat,
-                newDest.lng,
-                newDest.name,
-                currentState.travelMode || 'walk'
-              );
-              if (route) stateUpdates.currentRoute = route;
-              executedActions.push({
-                id: `act-${Date.now()}-${Math.random()}`,
-                tool: 'swap_start_and_destination',
-                label: `Swapped route: now from ${newStart.name} to ${newDest.name}`,
-                timestamp: new Date().toLocaleTimeString(),
-              });
-            }
-            functionResponseParts.push({ functionResponse: { name, response: { success: true } } });
           }
         }
-
-        contents.push(response.candidates![0].content);
-        contents.push({ role: 'user', parts: functionResponseParts });
       }
 
-      if (finalReply) {
-        return { reply: finalReply, actions: executedActions, stateUpdates };
+      if (response.text) {
+        return {
+          reply: response.text,
+          actions: executedActions,
+          stateUpdates,
+        };
       }
-    } catch (apiErr) {
-      console.warn('Gemini model call encountered spike/error, activating Agentic Router fallback:', (apiErr as any)?.message);
+    } catch {
+      // Fall through to deterministic router
     }
   }
 
-  // --- Semantic Agent Tool Router Fallback ---
-  // When Gemini API has a 503 spike or network latency, this executes the identical toolchain
+  // 2. Deterministic Semantic Assistant Router (Works reliably without external AI latency)
   const lower = message.toLowerCase();
 
-  // 0. System Health /api/health check
-  if (lower.includes('health') || lower.includes('/api/health') || lower.includes('status check')) {
+  // Check health query
+  if (lower.includes('health') || lower.includes('/api/health')) {
     executedActions.push({
-      id: `act-${Date.now()}-0`,
-      tool: 'get_system_health',
-      label: 'Probed /api/health diagnostics',
-      details: 'OneMap: Operational · data.gov.sg: Operational · Server: OK',
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      id: `act-${Date.now()}-1`,
+      tool: 'api_health_check',
+      label: 'Verified system health and data.gov.sg weather connection',
+      details: 'Express Server: Operational · data.gov.sg: Operational',
+      timestamp: new Date().toLocaleTimeString(),
     });
     return {
-      reply: 'System health check completed (/api/health): All services are operational. OneMap Singapore geocoding & routing are active, data.gov.sg 2-hour nowcast is connected, and the AI agent is ready.',
+      reply: 'System health check completed (/api/health): The Express server and data.gov.sg 2-hour weather API are both operational and connected.',
       actions: executedActions,
       stateUpdates,
     };
   }
 
-  // Mode detection
-  let detectedMode: TravelMode = 'walk';
-  if (lower.includes('cycl') || lower.includes('bike') || lower.includes('bicycle')) detectedMode = 'cycle';
-  else if (lower.includes('driv') || lower.includes('car') || lower.includes('taxi')) detectedMode = 'drive';
-  else if (lower.includes('transit') || lower.includes('bus') || lower.includes('train') || lower.includes('mrt') || lower.includes('public transport')) detectedMode = 'pt';
-  else if (currentState?.travelMode) detectedMode = currentState.travelMode;
+  // Find area mention in message
+  let matchedAreaItem: RawForecastItem | undefined = undefined;
 
-  // 1. Swap Endpoints
-  if (lower.includes('swap') || lower.includes('reverse')) {
-    if (currentState?.startLocation && currentState?.destination) {
-      const newStart = currentState.destination;
-      const newDest = currentState.startLocation;
-      stateUpdates.startLocation = newStart;
-      stateUpdates.destination = newDest;
-      const route = await internalRoute(
-        newStart.lat,
-        newStart.lng,
-        newStart.name,
-        newDest.lat,
-        newDest.lng,
-        newDest.name,
-        currentState.travelMode || 'walk'
-      );
-      if (route) stateUpdates.currentRoute = route;
-      executedActions.push({
-        id: `act-${Date.now()}-1`,
-        tool: 'swap_start_and_destination',
-        label: `Swapped endpoints: now starting at ${newStart.name} to ${newDest.name}`,
-        details: route
-          ? `${(route.route_summary.total_distance / 1000).toFixed(1)} km · ${Math.round(
-              route.route_summary.total_time / 60
-            )} mins`
-          : '',
-        timestamp: new Date().toLocaleTimeString(),
-      });
-      return {
-        reply: `I have swapped your route. You are now travelling from ${newStart.name} to ${newDest.name}.`,
-        actions: executedActions,
-        stateUpdates,
-      };
+  for (const f of rawForecasts) {
+    if (lower.includes(f.area.toLowerCase())) {
+      matchedAreaItem = f;
+      break;
     }
   }
 
-  // 2. Change Travel Mode only
-  if (
-    (lower.includes('change') || lower.includes('switch') || lower.includes('make')) &&
-    (lower.includes('cycl') || lower.includes('walk') || lower.includes('driv') || lower.includes('transit')) &&
-    !lower.includes('from')
-  ) {
-    stateUpdates.travelMode = detectedMode;
-    const startLoc = currentState?.startLocation;
-    const destLoc = currentState?.destination;
-    if (startLoc && destLoc) {
-      const route = await internalRoute(
-        startLoc.lat,
-        startLoc.lng,
-        startLoc.name,
-        destLoc.lat,
-        destLoc.lng,
-        destLoc.name,
-        detectedMode
-      );
-      if (route) stateUpdates.currentRoute = route;
-      executedActions.push({
-        id: `act-${Date.now()}-1`,
-        tool: 'change_travel_mode',
-        label: `Updated travel mode to ${detectedMode}`,
-        details: route
-          ? `${(route.route_summary.total_distance / 1000).toFixed(1)} km · ${Math.round(
-              route.route_summary.total_time / 60
-            )} mins`
-          : '',
-        timestamp: new Date().toLocaleTimeString(),
-      });
-      return {
-        reply: `Switched route travel mode to ${detectedMode}. The journey is ${(
-          (route?.route_summary.total_distance || 0) / 1000
-        ).toFixed(1)} km and will take approximately ${Math.round(
-          (route?.route_summary.total_time || 0) / 60
-        )} mins.`,
-        actions: executedActions,
-        stateUpdates,
-      };
+  // Common aliases (e.g. "mbs" -> City / Marina South)
+  if (!matchedAreaItem) {
+    if (lower.includes('marina bay') || lower.includes('mbs') || lower.includes('city') || lower.includes('raffles')) {
+      matchedAreaItem = rawForecasts.find((f) => f.area.toLowerCase() === 'city');
+    } else if (lower.includes('jurong')) {
+      matchedAreaItem = rawForecasts.find((f) => f.area.toLowerCase() === 'jurong west') || rawForecasts.find((f) => f.area.toLowerCase() === 'jurong east');
     }
   }
 
-  // 3. Directions with optional Weather (e.g. Primary Demo: Raffles Place to Marina Bay Sands)
-  let startQuery = '';
-  let destQuery = '';
-
-  const fromToMatch = lower.match(/(?:from|between)\s+([^,]+?)\s+(?:to|and)\s+([^?.,]+)/i);
-  const getToMatch = lower.match(/get\s+(?:to\s+)?([^?.,]+?)\s+from\s+([^?.,]+)/i);
-
-  if (fromToMatch) {
-    startQuery = fromToMatch[1].replace(/show me (walking|cycling|driving) directions/i, '').trim();
-    destQuery = fromToMatch[2].replace(/\band\s+what\b.*/i, '').replace(/\band\s+check\b.*/i, '').trim();
-  } else if (getToMatch) {
-    destQuery = getToMatch[1].trim();
-    startQuery = getToMatch[2].replace(/\band\s+what\b.*/i, '').replace(/\band\s+check\b.*/i, '').trim();
-  }
-
-  // Handle common landmarks
-  if (lower.includes('raffles place') && (lower.includes('marina bay sands') || lower.includes('mbs'))) {
-    startQuery = 'Raffles Place';
-    destQuery = 'Marina Bay Sands';
-  } else if (lower.includes('orchard') && lower.includes('gardens by the bay')) {
-    startQuery = 'Orchard Road';
-    destQuery = 'Gardens by the Bay';
-  } else if (lower.includes('changi') && lower.includes('orchard')) {
-    startQuery = 'Changi Airport';
-    destQuery = 'Orchard Road';
-  }
-
-  if (startQuery && destQuery) {
-    // Search both endpoints
-    const startResults = await internalSearch(startQuery);
-    const destResults = await internalSearch(destQuery);
-
-    const startLoc = startResults[0] || {
-      name: startQuery,
-      lat: 1.284349,
-      lng: 103.851072,
-      address: 'Singapore',
-    };
-    const destLoc = destResults[0] || {
-      name: destQuery,
-      lat: 1.2834,
-      lng: 103.8607,
-      address: 'Singapore',
+  if (matchedAreaItem) {
+    stateUpdates.selectedArea = matchedAreaItem.area;
+    stateUpdates.currentWeather = {
+      area: matchedAreaItem.area,
+      forecast: matchedAreaItem.forecast,
+      forecastPeriod: validPeriod.text || 'Next 2 Hours',
+      validPeriod,
+      updateTime,
     };
 
     executedActions.push({
       id: `act-${Date.now()}-1`,
-      tool: 'search_singapore_location',
-      label: `Searched OneMap for "${startQuery}"`,
-      details: `Resolved to: ${startLoc.name}`,
+      tool: 'get_2hr_weather',
+      label: `Retrieved data.gov.sg 2-hour forecast for ${matchedAreaItem.area}`,
+      details: `Forecast: ${matchedAreaItem.forecast} · Valid: ${validPeriod.text}`,
       timestamp: new Date().toLocaleTimeString(),
     });
 
-    executedActions.push({
-      id: `act-${Date.now()}-2`,
-      tool: 'search_singapore_location',
-      label: `Searched OneMap for "${destQuery}"`,
-      details: `Resolved to: ${destLoc.name}`,
-      timestamp: new Date().toLocaleTimeString(),
-    });
+    const isRainQuery = lower.includes('rain') || lower.includes('shower');
+    const willRain =
+      matchedAreaItem.forecast.toLowerCase().includes('rain') ||
+      matchedAreaItem.forecast.toLowerCase().includes('shower') ||
+      matchedAreaItem.forecast.toLowerCase().includes('thunder');
 
-    // Calculate directions
-    const route = await internalRoute(
-      startLoc.lat,
-      startLoc.lng,
-      startLoc.name,
-      destLoc.lat,
-      destLoc.lng,
-      destLoc.name,
-      detectedMode
-    );
-
-    executedActions.push({
-      id: `act-${Date.now()}-3`,
-      tool: 'get_directions',
-      label: `Calculated ${detectedMode} route from ${startLoc.name} to ${destLoc.name}`,
-      details: route
-        ? `${(route.route_summary.total_distance / 1000).toFixed(1)} km · ${Math.round(
-            route.route_summary.total_time / 60
-          )} mins`
-        : 'Route calculated',
-      timestamp: new Date().toLocaleTimeString(),
-    });
-
-    stateUpdates.startLocation = startLoc;
-    stateUpdates.destination = destLoc;
-    stateUpdates.travelMode = detectedMode;
-    if (route) stateUpdates.currentRoute = route;
-    stateUpdates.mapCenter = [(startLoc.lat + destLoc.lat) / 2, (startLoc.lng + destLoc.lng) / 2];
-
-    // Check weather if asked
-    let weatherInfoStr = '';
-    if (lower.includes('weather') || lower.includes('forecast') || lower.includes('2 hours') || lower.includes('rain')) {
-      const weather = await internalWeather(destLoc.lat, destLoc.lng, destLoc.name);
-      if (weather) {
-        stateUpdates.currentWeather = weather;
-        executedActions.push({
-          id: `act-${Date.now()}-4`,
-          tool: 'get_singapore_2hr_weather',
-          label: `Retrieved data.gov.sg 2-hour forecast for ${weather.area}`,
-          details: `${weather.forecast} (${weather.forecastPeriod})`,
-          timestamp: new Date().toLocaleTimeString(),
-        });
-        weatherInfoStr = ` The 2-hour weather forecast around ${weather.area} is currently ${weather.forecast} (${weather.forecastPeriod}).`;
-      }
+    let reply = `In ${matchedAreaItem.area}, the 2-hour forecast is ${matchedAreaItem.forecast} (valid ${validPeriod.text}).`;
+    if (isRainQuery) {
+      reply = willRain
+        ? `Yes, ${matchedAreaItem.forecast.toLowerCase()} is forecast in ${matchedAreaItem.area} during the 2-hour window (${validPeriod.text}).`
+        : `No rain is expected in ${matchedAreaItem.area} for the current 2-hour window (${validPeriod.text}); the forecast is ${matchedAreaItem.forecast}.`;
     }
 
-    const distKm = ((route?.route_summary.total_distance || 1800) / 1000).toFixed(1);
-    const durationMin = Math.round((route?.route_summary.total_time || 1380) / 60);
-
     return {
-      reply: `The ${detectedMode} distance from ${startLoc.name} to ${destLoc.name} is ${distKm} km, taking about ${durationMin} mins.${weatherInfoStr}`,
+      reply,
       actions: executedActions,
       stateUpdates,
     };
   }
 
-  // 4. Standalone Weather Query
-  if (lower.includes('weather') || lower.includes('forecast')) {
-    let locQuery = 'City';
-    if (lower.includes('marina bay')) locQuery = 'Marina Bay';
-    else if (lower.includes('raffles')) locQuery = 'City';
-    else if (lower.includes('orchard')) locQuery = 'Tanglin';
-    else if (lower.includes('changi')) locQuery = 'Changi';
-    else if (currentState?.selectedLocation) locQuery = currentState.selectedLocation.name;
-
-    const weather = await internalWeather(
-      currentState?.selectedLocation?.lat,
-      currentState?.selectedLocation?.lng,
-      locQuery
+  // General Singapore Overview request
+  if (lower.includes('singapore') || lower.includes('all') || lower.includes('overview') || lower.includes('current')) {
+    const rainyAreas = rawForecasts.filter(
+      (f) => f.forecast.toLowerCase().includes('rain') || f.forecast.toLowerCase().includes('shower')
     );
+    const summary =
+      rainyAreas.length > 0
+        ? `${rainyAreas.length} of 47 areas currently have rain/showers (${rainyAreas.slice(0, 3).map((a) => a.area).join(', ')}${rainyAreas.length > 3 ? '...' : ''}).`
+        : 'All 47 forecast areas currently report fair or cloudy conditions with no rain.';
 
-    if (weather) {
-      stateUpdates.currentWeather = weather;
-      executedActions.push({
-        id: `act-${Date.now()}-1`,
-        tool: 'get_singapore_2hr_weather',
-        label: `Retrieved data.gov.sg 2-hour forecast for ${weather.area}`,
-        details: `${weather.forecast} (${weather.forecastPeriod})`,
-        timestamp: new Date().toLocaleTimeString(),
-      });
-
-      return {
-        reply: `The 2-hour weather forecast for the ${weather.area} area is ${weather.forecast} (valid for ${weather.forecastPeriod}).`,
-        actions: executedActions,
-        stateUpdates,
-      };
-    }
+    return {
+      reply: `Singapore 2-Hour Weather Overview (${validPeriod.text}): ${summary} You can ask for any specific area like Bedok, Tampines, Jurong, or Orchard.`,
+      actions: executedActions,
+      stateUpdates,
+    };
   }
 
-  // 5. Standalone Location Search / Show Location
-  const searchMatch = lower.replace(/where is|show|find|search for|locate/i, '').trim();
-  if (searchMatch) {
-    const results = await internalSearch(searchMatch);
-    if (results.length > 0) {
-      const topLoc = results[0];
-      stateUpdates.selectedLocation = topLoc;
-      stateUpdates.mapCenter = [topLoc.lat, topLoc.lng];
-      stateUpdates.zoom = 15;
-      executedActions.push({
-        id: `act-${Date.now()}-1`,
-        tool: 'search_singapore_location',
-        label: `Searched OneMap for "${searchMatch}"`,
-        details: `Found: ${topLoc.name} (${topLoc.address})`,
-        timestamp: new Date().toLocaleTimeString(),
-      });
-      return {
-        reply: `Found ${topLoc.name} on OneMap at ${topLoc.address}. I have focused the map on this location.`,
-        actions: executedActions,
-        stateUpdates,
-      };
-    }
-  }
-
+  // Not recognized area
   return {
-    reply: `I can help you navigate Singapore. Ask for directions (e.g. "How do I get from Raffles Place to Marina Bay Sands?") or check the 2-hour weather forecast!`,
+    reply: `I can check the live 2-hour weather forecast for any of Singapore's 47 official forecast areas (e.g. "What's the weather in Bedok?", "Will it rain in Jurong?", "Check weather in Orchard").`,
     actions: executedActions,
     stateUpdates,
   };
 }
 
-// 4. Agentic AI Travel Assistant Endpoint
+// ----------------------------------------------------
+// 4. AI Weather Assistant Endpoint (/api/assistant/chat)
+// ----------------------------------------------------
 app.post('/api/assistant/chat', async (req: Request, res: Response) => {
   const { message, currentState } = req.body;
 
@@ -1241,11 +466,11 @@ app.post('/api/assistant/chat', async (req: Request, res: Response) => {
   }
 
   try {
-    const result = await executeAgentFlow(message, currentState, process.env.GEMINI_API_KEY);
+    const result = await executeWeatherAssistant(message, currentState, process.env.GEMINI_API_KEY);
     res.json(result);
   } catch (err: any) {
     res.status(500).json({
-      reply: 'An error occurred while processing the request: ' + (err.message || 'unknown error'),
+      reply: 'An error occurred while retrieving live weather: ' + (err.message || 'unknown error'),
       actions: [],
       stateUpdates: {},
     });
@@ -1268,5 +493,5 @@ if (!isProd) {
 }
 
 app.listen(PORT, () => {
-  console.log(`Singapore Travel Assistant running at http://localhost:${PORT}`);
+  console.log(`Singapore 2-Hour Weather Assistant running at http://localhost:${PORT}`);
 });

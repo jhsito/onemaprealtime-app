@@ -1,6 +1,6 @@
 {
   "name": "Singapore Travel & Navigation Assistant",
-  "description": "Agentic Singapore travel assistant integrating OneMap location search, routing, and data.gov.sg 2-hour weather forecast.",
+  "description": "Singapore 2-Hour Weather Assistant powered by live data.gov.sg nowcast API.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
