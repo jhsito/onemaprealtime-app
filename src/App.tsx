@@ -122,21 +122,29 @@ export default function App() {
 
   // Location selection handler
   const handleSelectLocation = (loc: LocationItem) => {
-    setSelectedLocation(loc);
-    setMapCenter([loc.lat, loc.lng]);
+    const lat = loc.latitude ?? loc.lat;
+    const lng = loc.longitude ?? loc.lng;
+    const normalized: LocationItem = { ...loc, lat, lng, latitude: lat, longitude: lng };
+    setSelectedLocation(normalized);
+    setMapCenter([lat, lng]);
     setZoom(15);
-    fetchWeatherForLocation(loc.lat, loc.lng, loc.name);
+    fetchWeatherForLocation(lat, lng, loc.name);
   };
 
   // Set as start
   const handleSetAsStart = (loc: LocationItem) => {
-    setStartLocation(loc);
+    const lat = loc.latitude ?? loc.lat;
+    const lng = loc.longitude ?? loc.lng;
+    setStartLocation({ ...loc, lat, lng, latitude: lat, longitude: lng });
   };
 
   // Set as destination
   const handleSetAsDestination = (loc: LocationItem) => {
-    setDestination(loc);
-    fetchWeatherForLocation(loc.lat, loc.lng, loc.name);
+    const lat = loc.latitude ?? loc.lat;
+    const lng = loc.longitude ?? loc.lng;
+    const normalized: LocationItem = { ...loc, lat, lng, latitude: lat, longitude: lng };
+    setDestination(normalized);
+    fetchWeatherForLocation(lat, lng, loc.name);
   };
 
   // Manual Get Directions

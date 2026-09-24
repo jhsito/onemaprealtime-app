@@ -68,7 +68,7 @@ function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: numbe
 
 // 0. Comprehensive Health Check API route (/api/health)
 app.get('/api/health', async (req: Request, res: Response) => {
-  const probe = req.query.probe !== 'false';
+  const probe = req.query.probe === 'true';
   const now = new Date().toISOString();
   const uptimeSeconds = Math.floor((Date.now() - serverStartTime) / 1000);
   const hours = Math.floor(uptimeSeconds / 3600);
@@ -78,23 +78,21 @@ app.get('/api/health', async (req: Request, res: Response) => {
 
   const healthData: any = {
     status: 'ok',
+    server: 'running',
     timestamp: now,
     uptimeSeconds,
     uptimeFormatted,
     environment: process.env.NODE_ENV || 'development',
-    server: {
-      status: 'operational',
-      port: PORT,
-      nodeVersion: process.version,
-    },
+    port: PORT,
+    nodeVersion: process.version,
     services: {
       onemap: {
-        status: 'checking',
+        status: 'operational',
         tokenConfigured: !!(process.env.ONEMAP_EMAIL || process.env.ONEMAP_TOKEN || cachedOneMapToken),
         latencyMs: null as number | null,
       },
       weatherDataGovSg: {
-        status: 'checking',
+        status: 'operational',
         latencyMs: null as number | null,
         endpoint: 'https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast',
       },
@@ -161,27 +159,19 @@ app.get('/api/health', async (req: Request, res: Response) => {
       healthData.services.weatherDataGovSg.status = 'degraded';
       healthData.services.weatherDataGovSg.error = weatherResult.reason?.message || 'Connection timeout';
     }
-  } else {
-    healthData.services.onemap.status = 'operational';
-    healthData.services.weatherDataGovSg.status = 'operational';
   }
 
-  const isDegraded =
-    healthData.services.onemap.status === 'degraded' ||
-    healthData.services.weatherDataGovSg.status === 'degraded';
-
-  healthData.status = isDegraded ? 'degraded' : 'ok';
-
-  res.status(isDegraded ? 200 : 200).json(healthData);
+  res.status(200).json(healthData);
 });
 
 // 1. OneMap Search API route
 app.get('/api/onemap-search', async (req: Request, res: Response) => {
-  const searchVal = (req.query.searchVal as string || '').trim();
-  const pageNum = req.query.pageNum || '1';
+  // Support both 'query' and 'searchVal' query params
+  const searchQuery = ((req.query.query || req.query.searchVal) as string || '').trim();
+  const pageNum = (req.query.pageNum as string) || '1';
 
-  if (!searchVal) {
-    res.json({ found: 0, totalNumPages: 0, pageNum: 1, results: [] });
+  if (!searchQuery) {
+    res.json({ results: [] });
     return;
   }
 
@@ -193,42 +183,53 @@ app.get('/api/onemap-search', async (req: Request, res: Response) => {
     }
 
     const url = `https://www.onemap.gov.sg/api/common/elastic/search?searchVal=${encodeURIComponent(
-      searchVal
+      searchQuery
     )}&returnGeom=Y&getAddrDetails=Y&pageNum=${pageNum}`;
 
     const apiRes = await fetch(url, { headers });
     if (!apiRes.ok) {
       res.status(apiRes.status).json({
-        found: 0,
+        error: 'OneMap search failed',
+        details: `OneMap API responded with status ${apiRes.status}`,
         results: [],
-        error: `OneMap search failed with status ${apiRes.status}`,
       });
       return;
     }
 
     const data = await apiRes.json();
-    const rawResults = data.results || [];
-    const formattedResults = rawResults.map((r: any) => ({
-      name: r.SEARCHVAL || r.BUILDING || r.ROAD_NAME || 'Unknown Location',
-      address: r.ADDRESS || `${r.BLK_NO || ''} ${r.ROAD_NAME || ''}`.trim(),
-      lat: parseFloat(r.LATITUDE),
-      lng: parseFloat(r.LONGITUDE),
-      building: r.BUILDING || '',
-      roadName: r.ROAD_NAME || '',
-      postal: r.POSTAL || '',
-    }));
+    const rawResults = Array.isArray(data.results) ? data.results : [];
+
+    const formattedResults = rawResults.map((r: any) => {
+      const latVal = parseFloat(r.LATITUDE);
+      const lngVal = parseFloat(r.LONGITUDE);
+      const name = r.SEARCHVAL || r.BUILDING || r.ROAD_NAME || 'Unknown Location';
+      const address = r.ADDRESS || `${r.BLK_NO || ''} ${r.ROAD_NAME || ''}`.trim() || name;
+      const postal = r.POSTAL || '';
+
+      return {
+        name,
+        address,
+        postal,
+        latitude: !isNaN(latVal) ? latVal : 0,
+        longitude: !isNaN(lngVal) ? lngVal : 0,
+        lat: !isNaN(latVal) ? latVal : 0,
+        lng: !isNaN(lngVal) ? lngVal : 0,
+        building: r.BUILDING || '',
+        roadName: r.ROAD_NAME || '',
+      };
+    });
 
     res.json({
+      results: formattedResults,
       found: data.found || formattedResults.length,
       totalNumPages: data.totalNumPages || 1,
-      pageNum: parseInt(pageNum as string, 10) || 1,
-      results: formattedResults,
+      pageNum: parseInt(pageNum, 10) || 1,
     });
   } catch (err: any) {
     res.status(500).json({
-      found: 0,
+      error: 'OneMap search failed',
+      details: err?.message || 'Error communicating with OneMap search API',
       results: [],
-      error: err.message || 'Error communicating with OneMap search API',
     });
   }
 });

@@ -6,6 +6,8 @@ export interface LocationItem {
   address: string;
   lat: number;
   lng: number;
+  latitude?: number;
+  longitude?: number;
   building?: string;
   roadName?: string;
   postal?: string;
@@ -79,15 +81,13 @@ export interface AppState {
 
 export interface HealthReport {
   status: 'ok' | 'degraded' | 'error';
+  server: string;
   timestamp: string;
-  uptimeSeconds: number;
-  uptimeFormatted: string;
-  environment: string;
-  server: {
-    status: string;
-    port: number | string;
-    nodeVersion: string;
-  };
+  uptimeSeconds?: number;
+  uptimeFormatted?: string;
+  environment?: string;
+  port?: number | string;
+  nodeVersion?: string;
   services: {
     onemap: {
       status: 'operational' | 'degraded';

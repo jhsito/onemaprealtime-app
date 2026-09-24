@@ -193,12 +193,16 @@ export const HealthModal: React.FC<HealthModalProps> = ({
               </div>
               <div className={`space-y-1 text-[11px] ${isDay ? 'text-slate-600' : 'text-slate-400'}`}>
                 <div className="flex justify-between">
+                  <span>Status:</span>
+                  <span className="font-mono text-emerald-500 font-medium">{healthData?.server || 'running'}</span>
+                </div>
+                <div className="flex justify-between">
                   <span>Port:</span>
-                  <span className="font-mono font-medium">{healthData?.server.port || '3000'}</span>
+                  <span className="font-mono font-medium">{healthData?.port || '3000'}</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Node:</span>
-                  <span className="font-mono">{healthData?.server.nodeVersion || process.version}</span>
+                  <span className="font-mono">{healthData?.nodeVersion || 'v22'}</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Environment:</span>

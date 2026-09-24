@@ -44,15 +44,36 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      const res = await fetch(`/api/onemap-search?searchVal=${encodeURIComponent(q)}&pageNum=1`);
+      const res = await fetch(`/api/onemap-search?query=${encodeURIComponent(q)}`);
       if (!res.ok) {
-        throw new Error(`Search failed (${res.status})`);
+        const errorData = await res.json().catch(() => null);
+        throw new Error(errorData?.details || errorData?.error || `Search failed (${res.status})`);
       }
       const data = await res.json();
+      if (data.error) {
+        setErrorMsg(data.details || data.error);
+        setResults([]);
+        return;
+      }
       if (data.results && Array.isArray(data.results)) {
-        setResults(data.results.slice(0, 7));
+        const mappedResults: LocationItem[] = data.results.map((r: any) => {
+          const lat = typeof r.latitude === 'number' ? r.latitude : parseFloat(r.latitude || r.LATITUDE || '0');
+          const lng = typeof r.longitude === 'number' ? r.longitude : parseFloat(r.longitude || r.LONGITUDE || '0');
+          return {
+            name: r.name || r.SEARCHVAL || 'Unknown Location',
+            address: r.address || r.ADDRESS || '',
+            postal: r.postal || r.POSTAL || '',
+            lat,
+            lng,
+            latitude: lat,
+            longitude: lng,
+            building: r.building || r.BUILDING || '',
+            roadName: r.roadName || r.ROAD_NAME || '',
+          };
+        });
+        setResults(mappedResults.slice(0, 7));
         setIsOpen(true);
-        if (data.results.length === 0) {
+        if (mappedResults.length === 0) {
           setErrorMsg(`No locations found for "${q}". Try another Singapore landmark or postal code.`);
         }
       } else {
@@ -60,7 +81,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
         setErrorMsg('No results returned.');
       }
     } catch (err: any) {
-      setErrorMsg('Failed to search OneMap. Please check your connection.');
+      setErrorMsg(err.message || 'Failed to search OneMap. Please check your connection.');
       setResults([]);
     } finally {
       setIsLoading(false);
