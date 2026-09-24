@@ -58,29 +58,46 @@ export interface AppState {
 
 export interface HealthReport {
   status: 'ok' | 'degraded' | 'error';
-  server: string;
+  server: {
+    status: string;
+    port?: number | string;
+    nodeVersion?: string;
+    uptimeSeconds?: number;
+    uptimeFormatted?: string;
+    environment?: string;
+  } | string;
+  weather?: {
+    status: 'operational' | 'error' | 'degraded';
+    service?: string;
+    feed?: string;
+    latencyMs: number | null;
+    endpoint?: string;
+    httpStatus?: number;
+    coverage?: string;
+    error?: string;
+  };
   timestamp: string;
   uptimeSeconds?: number;
   uptimeFormatted?: string;
   environment?: string;
   port?: number | string;
   nodeVersion?: string;
-  services: {
-    server: {
+  services?: {
+    server?: {
       status: string;
-      port: number | string;
-      nodeVersion: string;
+      port?: number | string;
+      nodeVersion?: string;
     };
-    weatherDataGovSg: {
+    weatherDataGovSg?: {
       status: 'operational' | 'degraded';
       feedType: string;
       latencyMs: number | null;
-      endpoint: string;
+      endpoint?: string;
       httpStatus?: number;
-      coverage: string;
+      coverage?: string;
       error?: string;
     };
-    geminiAi: {
+    geminiAi?: {
       status: string;
       model: string;
     };

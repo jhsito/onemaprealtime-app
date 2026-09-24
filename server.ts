@@ -9,12 +9,26 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const isProd = process.env.NODE_ENV === 'production';
-const PORT = process.env.PORT || 3000;
+
+// Parse port from environment or CLI arguments (e.g. --port 3000)
+function getPort(): number {
+  if (process.env.PORT) {
+    const p = parseInt(process.env.PORT, 10);
+    if (!isNaN(p)) return p;
+  }
+  const portArgIdx = process.argv.indexOf('--port');
+  if (portArgIdx !== -1 && process.argv[portArgIdx + 1]) {
+    const p = parseInt(process.argv[portArgIdx + 1], 10);
+    if (!isNaN(p)) return p;
+  }
+  return 3000;
+}
+
+const PORT = getPort();
+const serverStartTime = Date.now();
 
 const app = express();
 app.use(express.json());
-
-const serverStartTime = Date.now();
 
 // ----------------------------------------------------
 // Core Helper: Fetch Live 2-Hour Forecast from data.gov.sg
@@ -36,15 +50,59 @@ interface LiveWeatherPayload {
   rawForecasts: RawForecastItem[];
 }
 
-async function fetchLive2HourForecast(): Promise<LiveWeatherPayload | null> {
+interface WeatherFetchResult {
+  data: LiveWeatherPayload | null;
+  latencyMs: number | null;
+  status: 'operational' | 'error';
+  httpStatus: number;
+  error?: string;
+}
+
+async function fetchLive2HourForecast(): Promise<WeatherFetchResult> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+  };
+
+  // If DATA_GOV_API_KEY exists, send as x-api-key header; otherwise call public endpoint
+  if (process.env.DATA_GOV_API_KEY) {
+    headers['x-api-key'] = process.env.DATA_GOV_API_KEY;
+  }
+
+  const startTime = Date.now();
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6000);
     const res = await fetch('https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast', {
-      headers: { Accept: 'application/json' },
+      headers,
+      signal: controller.signal,
     });
-    if (!res.ok) return null;
+    clearTimeout(timeout);
+    const latencyMs = Date.now() - startTime;
+
+    if (!res.ok) {
+      return {
+        data: null,
+        latencyMs,
+        status: 'error',
+        httpStatus: res.status,
+        error: `data.gov.sg responded with HTTP ${res.status}`,
+      };
+    }
+
     const json = await res.json();
+    // Validate live data.gov.sg structure:
+    // data.area_metadata
+    // data.items[0].forecasts
+    // data.items[0].valid_period
+    // data.items[0].update_timestamp
     if (json.code !== 0 || !json.data || !json.data.items || json.data.items.length === 0) {
-      return null;
+      return {
+        data: null,
+        latencyMs,
+        status: 'error',
+        httpStatus: res.status,
+        error: 'Invalid response format from data.gov.sg',
+      };
     }
 
     const areaMetadata: RawAreaMeta[] = json.data.area_metadata || [];
@@ -52,9 +110,6 @@ async function fetchLive2HourForecast(): Promise<LiveWeatherPayload | null> {
     const forecasts: RawForecastItem[] = latestItem.forecasts || [];
     const validPeriod = latestItem.valid_period || { start: '', end: '', text: 'Next 2 Hours' };
     const updateTime = latestItem.update_timestamp || new Date().toISOString();
-
-    const areaMap = new Map<string, string>();
-    forecasts.forEach((f) => areaMap.set(f.area.toLowerCase(), f.forecast));
 
     const metaMap = new Map<string, { latitude: number; longitude: number }>();
     areaMetadata.forEach((m) => metaMap.set(m.name.toLowerCase(), m.label_location));
@@ -70,62 +125,65 @@ async function fetchLive2HourForecast(): Promise<LiveWeatherPayload | null> {
     });
 
     return {
-      validPeriod,
-      updateTime,
-      areas,
-      rawForecasts: forecasts,
+      data: {
+        validPeriod,
+        updateTime,
+        areas,
+        rawForecasts: forecasts,
+      },
+      latencyMs,
+      status: 'operational',
+      httpStatus: res.status,
     };
-  } catch {
-    return null;
+  } catch (err: any) {
+    return {
+      data: null,
+      latencyMs: null,
+      status: 'error',
+      httpStatus: 0,
+      error: err?.message || 'Connection timeout or network failure',
+    };
   }
 }
 
 // ----------------------------------------------------
-// 1. API Health Check Endpoint (/api/health)
+// 1. Health Handler (GET /api/health)
 // ----------------------------------------------------
-app.get('/api/health', async (_req: Request, res: Response) => {
-  const now = new Date().toISOString();
+async function healthHandler(_req: Request, res: Response) {
+  const probe = await fetchLive2HourForecast();
+  const isOperational = probe.status === 'operational';
+
   const uptimeSeconds = Math.floor((Date.now() - serverStartTime) / 1000);
   const hours = Math.floor(uptimeSeconds / 3600);
   const minutes = Math.floor((uptimeSeconds % 3600) / 60);
   const seconds = uptimeSeconds % 60;
   const uptimeFormatted = `${hours}h ${minutes}m ${seconds}s`;
 
-  let weatherStatus = 'operational';
-  let weatherLatency: number | null = null;
-  let weatherHttpStatus: number = 200;
-  let weatherError: string | undefined = undefined;
-
-  const weatherStart = Date.now();
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000);
-    const r = await fetch('https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast', {
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    weatherLatency = Date.now() - weatherStart;
-    weatherHttpStatus = r.status;
-    if (!r.ok) {
-      weatherStatus = 'degraded';
-      weatherError = `data.gov.sg responded with HTTP ${r.status}`;
-    }
-  } catch (err: any) {
-    weatherStatus = 'degraded';
-    weatherError = err?.message || 'Connection timeout';
-  }
-
-  const isDegraded = weatherStatus === 'degraded';
-
+  // Explicit health structure matching specification:
+  // - status: "ok" or "degraded"
+  // - server.status: "operational"
+  // - weather.status: "operational" or "error"
+  // - weather.latencyMs: number or null (never "undefined ms")
   const healthData = {
-    status: isDegraded ? 'degraded' : 'ok',
-    server: 'running',
-    timestamp: now,
-    uptimeSeconds,
-    uptimeFormatted,
-    environment: process.env.NODE_ENV || 'development',
-    port: PORT,
-    nodeVersion: process.version,
+    status: isOperational ? 'ok' : 'degraded',
+    server: {
+      status: 'operational',
+      port: PORT,
+      nodeVersion: process.version,
+      uptimeSeconds,
+      uptimeFormatted,
+      environment: process.env.NODE_ENV || 'development',
+    },
+    weather: {
+      status: isOperational ? 'operational' : 'error',
+      service: 'data.gov.sg',
+      feed: '2-Hour Forecast API',
+      latencyMs: probe.latencyMs,
+      endpoint: 'https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast',
+      httpStatus: probe.httpStatus,
+      coverage: 'Singapore forecast areas',
+      ...(probe.error ? { error: probe.error } : {}),
+    },
     services: {
       server: {
         status: 'operational',
@@ -133,32 +191,33 @@ app.get('/api/health', async (_req: Request, res: Response) => {
         nodeVersion: process.version,
       },
       weatherDataGovSg: {
-        status: weatherStatus,
+        status: isOperational ? 'operational' : 'degraded',
         feedType: '2-Hour Forecast API',
-        latencyMs: weatherLatency,
+        latencyMs: probe.latencyMs,
         endpoint: 'https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast',
-        httpStatus: weatherHttpStatus,
+        httpStatus: probe.httpStatus,
         coverage: 'Singapore forecast areas',
-        error: weatherError,
+        ...(probe.error ? { error: probe.error } : {}),
       },
       geminiAi: {
-        status: process.env.GEMINI_API_KEY ? 'ready' : 'ready',
+        status: 'ready',
         model: 'gemini-3.8-flash',
       },
     },
+    timestamp: new Date().toISOString(),
   };
 
   res.status(200).json(healthData);
-});
+}
 
 // ----------------------------------------------------
-// 2. data.gov.sg 2-Hour Weather Forecast API (/api/weather)
+// 2. Weather Handler (GET /api/weather)
 // ----------------------------------------------------
-app.get('/api/weather', async (req: Request, res: Response) => {
+async function weatherHandler(req: Request, res: Response) {
   const areaQuery = ((req.query.area as string) || '').trim().toLowerCase();
 
-  const data = await fetchLive2HourForecast();
-  if (!data) {
+  const probe = await fetchLive2HourForecast();
+  if (!probe.data) {
     res.status(502).json({
       status: 'error',
       message: 'Live 2-hour weather information is temporarily unavailable.',
@@ -166,20 +225,18 @@ app.get('/api/weather', async (req: Request, res: Response) => {
     return;
   }
 
-  const { validPeriod, updateTime, areas, rawForecasts } = data;
+  const { validPeriod, updateTime, areas, rawForecasts } = probe.data;
 
   // If specific area requested, find best match
   let matchedArea = 'Bedok';
   let matchedForecast = '';
 
   if (areaQuery) {
-    // 1. Exact match
     const exact = rawForecasts.find((f) => f.area.toLowerCase() === areaQuery);
     if (exact) {
       matchedArea = exact.area;
       matchedForecast = exact.forecast;
     } else {
-      // 2. Contains match
       const partial = rawForecasts.find(
         (f) => f.area.toLowerCase().includes(areaQuery) || areaQuery.includes(f.area.toLowerCase())
       );
@@ -187,7 +244,6 @@ app.get('/api/weather', async (req: Request, res: Response) => {
         matchedArea = partial.area;
         matchedForecast = partial.forecast;
       } else {
-        // If not found, return 404 with available area list
         res.status(404).json({
           status: 'error',
           message: 'No matching 2-hour forecast area was found.',
@@ -197,7 +253,6 @@ app.get('/api/weather', async (req: Request, res: Response) => {
       }
     }
   } else {
-    // Default to Bedok if exists, else first area
     const defaultArea = rawForecasts.find((f) => f.area.toLowerCase() === 'bedok') || rawForecasts[0];
     if (defaultArea) {
       matchedArea = defaultArea.area;
@@ -205,7 +260,7 @@ app.get('/api/weather', async (req: Request, res: Response) => {
     }
   }
 
-  res.json({
+  res.status(200).json({
     status: 'ok',
     area: matchedArea,
     forecast: matchedForecast,
@@ -214,7 +269,7 @@ app.get('/api/weather', async (req: Request, res: Response) => {
     updateTime,
     areas,
   });
-});
+}
 
 // ----------------------------------------------------
 // 3. AI Assistant Flow (Singapore 2-Hour Weather Assistant)
@@ -227,9 +282,8 @@ async function executeWeatherAssistant(
   const executedActions: any[] = [];
   const stateUpdates: any = {};
 
-  // Fetch live weather data to use as ground truth
-  const liveData = await fetchLive2HourForecast();
-  if (!liveData) {
+  const probe = await fetchLive2HourForecast();
+  if (!probe.data) {
     return {
       reply: 'Live 2-hour weather information is temporarily unavailable.',
       actions: [],
@@ -237,9 +291,8 @@ async function executeWeatherAssistant(
     };
   }
 
-  const { validPeriod, updateTime, areas, rawForecasts } = liveData;
+  const { validPeriod, updateTime, rawForecasts } = probe.data;
 
-  // Gemini Tool declaration
   const getWeatherDeclaration: FunctionDeclaration = {
     name: 'get_2hr_weather',
     description:
@@ -256,7 +309,6 @@ async function executeWeatherAssistant(
     },
   };
 
-  // 1. Try Gemini AI if API key is provided
   if (apiKey) {
     try {
       const ai = new GoogleGenAI({
@@ -298,7 +350,10 @@ Rules:
           if (name === 'get_2hr_weather') {
             const locName = ((args as any)?.location || '').trim().toLowerCase();
             const matched = rawForecasts.find(
-              (f) => f.area.toLowerCase() === locName || f.area.toLowerCase().includes(locName) || locName.includes(f.area.toLowerCase())
+              (f) =>
+                f.area.toLowerCase() === locName ||
+                f.area.toLowerCase().includes(locName) ||
+                locName.includes(f.area.toLowerCase())
             );
 
             if (matched) {
@@ -319,10 +374,11 @@ Rules:
                 timestamp: new Date().toLocaleTimeString(),
               });
 
-              // Answer directly based on live data
               const lowerMsg = message.toLowerCase();
               const isRainQuery = lowerMsg.includes('rain') || lowerMsg.includes('shower');
-              const willRain = matched.forecast.toLowerCase().includes('rain') || matched.forecast.toLowerCase().includes('shower');
+              const willRain =
+                matched.forecast.toLowerCase().includes('rain') ||
+                matched.forecast.toLowerCase().includes('shower');
 
               let replyText = `In ${matched.area}, the 2-hour forecast is ${matched.forecast} (valid ${validPeriod.text}).`;
               if (isRainQuery) {
@@ -353,10 +409,9 @@ Rules:
     }
   }
 
-  // 2. Deterministic Semantic Assistant Router (Works reliably without external AI latency)
+  // Deterministic Semantic Router
   const lower = message.toLowerCase();
 
-  // Check health query
   if (lower.includes('health') || lower.includes('/api/health')) {
     executedActions.push({
       id: `act-${Date.now()}-1`,
@@ -372,7 +427,6 @@ Rules:
     };
   }
 
-  // Find area mention in message
   let matchedAreaItem: RawForecastItem | undefined = undefined;
 
   for (const f of rawForecasts) {
@@ -382,12 +436,13 @@ Rules:
     }
   }
 
-  // Common aliases (e.g. "mbs" -> City / Marina South)
   if (!matchedAreaItem) {
     if (lower.includes('marina bay') || lower.includes('mbs') || lower.includes('city') || lower.includes('raffles')) {
       matchedAreaItem = rawForecasts.find((f) => f.area.toLowerCase() === 'city');
     } else if (lower.includes('jurong')) {
-      matchedAreaItem = rawForecasts.find((f) => f.area.toLowerCase() === 'jurong west') || rawForecasts.find((f) => f.area.toLowerCase() === 'jurong east');
+      matchedAreaItem =
+        rawForecasts.find((f) => f.area.toLowerCase() === 'jurong west') ||
+        rawForecasts.find((f) => f.area.toLowerCase() === 'jurong east');
     }
   }
 
@@ -429,7 +484,6 @@ Rules:
     };
   }
 
-  // General Singapore Overview request
   if (lower.includes('singapore') || lower.includes('all') || lower.includes('overview') || lower.includes('current')) {
     const rainyAreas = rawForecasts.filter(
       (f) => f.forecast.toLowerCase().includes('rain') || f.forecast.toLowerCase().includes('shower')
@@ -446,7 +500,6 @@ Rules:
     };
   }
 
-  // Not recognized area
   return {
     reply: `I can check the live 2-hour weather forecast for any of Singapore's 47 official forecast areas (e.g. "What's the weather in Bedok?", "Will it rain in Jurong?", "Check weather in Orchard").`,
     actions: executedActions,
@@ -455,9 +508,9 @@ Rules:
 }
 
 // ----------------------------------------------------
-// 4. AI Weather Assistant Endpoint (/api/assistant/chat)
+// 4. Chat Handler (POST /api/assistant/chat)
 // ----------------------------------------------------
-app.post('/api/assistant/chat', async (req: Request, res: Response) => {
+async function chatHandler(req: Request, res: Response) {
   const { message, currentState } = req.body;
 
   if (!message || typeof message !== 'string') {
@@ -467,7 +520,7 @@ app.post('/api/assistant/chat', async (req: Request, res: Response) => {
 
   try {
     const result = await executeWeatherAssistant(message, currentState, process.env.GEMINI_API_KEY);
-    res.json(result);
+    res.status(200).json(result);
   } catch (err: any) {
     res.status(500).json({
       reply: 'An error occurred while retrieving live weather: ' + (err.message || 'unknown error'),
@@ -475,9 +528,29 @@ app.post('/api/assistant/chat', async (req: Request, res: Response) => {
       stateUpdates: {},
     });
   }
-});
+}
 
-// Serve frontend: Vite middleware in dev, static files in production
+// ----------------------------------------------------
+// 5. Explicit Route Registration BEFORE middlewares and fallbacks
+// ----------------------------------------------------
+// Express Router mounted at /api
+const apiRouter = express.Router();
+apiRouter.get('/health', healthHandler);
+apiRouter.get('/weather', weatherHandler);
+apiRouter.post('/assistant/chat', chatHandler);
+app.use('/api', apiRouter);
+
+// Direct registration on app for both /api/* and root paths
+app.get('/api/health', healthHandler);
+app.get('/health', healthHandler);
+app.get('/api/weather', weatherHandler);
+app.get('/weather', weatherHandler);
+app.post('/api/assistant/chat', chatHandler);
+
+// ----------------------------------------------------
+// 6. Vite middleware (dev) / static files (production)
+// MUST BE REGISTERED AFTER ALL /api ROUTES
+// ----------------------------------------------------
 if (!isProd) {
   const { createServer: createViteServer } = await import('vite');
   const vite = await createViteServer({
@@ -492,6 +565,6 @@ if (!isProd) {
   });
 }
 
-app.listen(PORT, () => {
-  console.log(`Singapore 2-Hour Weather Assistant running at http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Singapore 2-Hour Weather Assistant running at http://0.0.0.0:${PORT}`);
 });

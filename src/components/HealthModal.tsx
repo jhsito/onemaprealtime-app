@@ -56,7 +56,12 @@ export const HealthModal: React.FC<HealthModalProps> = ({
   if (!isOpen) return null;
 
   const isDegraded = healthData?.status === 'degraded';
-  const weatherSvc = healthData?.services.weatherDataGovSg;
+  const weatherSvc = healthData?.weather || healthData?.services?.weatherDataGovSg;
+  const serverObj = typeof healthData?.server === 'object' ? healthData.server : null;
+  const serverStatus = serverObj?.status || (typeof healthData?.server === 'string' ? healthData.server : 'operational');
+  const serverPort = serverObj?.port || healthData?.port || '3000';
+  const serverNode = serverObj?.nodeVersion || healthData?.nodeVersion || 'v22';
+  const uptimeDisplay = serverObj?.uptimeFormatted || healthData?.uptimeFormatted || 'Just started';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
@@ -91,7 +96,7 @@ export const HealthModal: React.FC<HealthModalProps> = ({
                 </code>
               </div>
               <p className={`text-[11px] ${isDay ? 'text-slate-500' : 'text-slate-400'}`}>
-                Real-time probe of server, data.gov.sg weather API & AI
+                Real-time probe of server & data.gov.sg 2-hour weather API
               </p>
             </div>
           </div>
@@ -147,7 +152,7 @@ export const HealthModal: React.FC<HealthModalProps> = ({
                     {isDegraded ? 'Service Degraded' : 'All Systems Operational'}
                   </div>
                   <div className="text-[11px] opacity-80">
-                    HTTP 200 · Uptime: {healthData.uptimeFormatted || 'Just started'}
+                    HTTP 200 · Uptime: {uptimeDisplay}
                   </div>
                 </div>
               </div>
@@ -178,23 +183,23 @@ export const HealthModal: React.FC<HealthModalProps> = ({
                   <span className="text-xs font-bold">Express Server</span>
                 </div>
                 <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-500 font-semibold border border-emerald-500/20">
-                  Operational
+                  {serverStatus === 'running' || serverStatus === 'operational' ? 'Operational' : serverStatus}
                 </span>
               </div>
               <div className={`space-y-1 text-[11px] ${isDay ? 'text-slate-600' : 'text-slate-400'}`}>
                 <div className="flex justify-between">
                   <span>Status:</span>
                   <span className="font-mono text-emerald-500 font-medium">
-                    {healthData?.server || 'running'}
+                    {serverStatus}
                   </span>
                 </div>
                 <div className="flex justify-between">
                   <span>Port:</span>
-                  <span className="font-mono font-medium">{healthData?.port || '3000'}</span>
+                  <span className="font-mono font-medium">{serverPort}</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Node:</span>
-                  <span className="font-mono">{healthData?.nodeVersion || 'v22'}</span>
+                  <span className="font-mono">{serverNode}</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Environment:</span>
@@ -227,19 +232,21 @@ export const HealthModal: React.FC<HealthModalProps> = ({
               <div className={`space-y-1 text-[11px] ${isDay ? 'text-slate-600' : 'text-slate-400'}`}>
                 <div className="flex justify-between">
                   <span>Feed Type:</span>
-                  <span className="font-medium text-sky-500">2-Hour Forecast API</span>
+                  <span className="font-medium text-sky-500">
+                    {(weatherSvc as any)?.feed || (weatherSvc as any)?.feedType || '2-Hour Forecast API'}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span>Latency:</span>
                   <span className="font-mono">
-                    {weatherSvc?.latencyMs !== null && weatherSvc?.latencyMs !== undefined
+                    {typeof weatherSvc?.latencyMs === 'number'
                       ? `${weatherSvc.latencyMs} ms`
                       : '—'}
                   </span>
                 </div>
                 <div className="flex justify-between">
                   <span>Coverage:</span>
-                  <span>Singapore forecast areas</span>
+                  <span>{weatherSvc?.coverage || 'Singapore forecast areas'}</span>
                 </div>
                 <div className="flex justify-between">
                   <span>HTTP Status:</span>
